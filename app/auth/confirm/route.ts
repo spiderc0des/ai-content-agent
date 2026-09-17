@@ -22,7 +22,39 @@ import { upsertSignedInUser } from '@/lib/queries';
  * They land on /profile so their first screen says what they can now do,
  * rather than dropping them into a list with no explanation.
  */
-const ALLOWED_TYPES = new Set(['invite', 'magiclink']);
+/**
+ * Every email OTP type Supabase can send a link for.
+ *
+ * `invite` and `magiclink` are the two this app actually triggers. The rest
+ * are here so that the email templates in supabase/email-templates/ can all
+ * use the same `token_hash` link: a template pointing at a type this route
+ * rejects fails at the worst possible moment — after someone has clicked a
+ * link in their inbox — and the failure looks identical to an expired one.
+ *
+ * `urn:supabase:mfa` is deliberately absent: reauthentication sends a code to
+ * type in, not a link to follow.
+ */
+const ALLOWED_TYPES = new Set(['invite', 'magiclink', 'email', 'recovery', 'email_change']);
+
+type EmailOtpType = 'invite' | 'magiclink' | 'email' | 'recovery' | 'email_change';
+
+/**
+ * Where to send them afterwards.
+ *
+ * `redirect_to` arrives from the email, which means it arrives from outside —
+ * and a redirect target taken from a URL without checking is an open redirect,
+ * the classic way a trusted domain gets used to launder a phishing link.
+ * Only a same-origin path is honoured; anything else falls back to /profile.
+ */
+function safeRedirect(raw: string | null, base: string): string {
+  if (!raw) return '/profile?welcome=1';
+  try {
+    const target = new URL(raw, base);
+    return target.origin === new URL(base).origin ? `${target.pathname}${target.search}` : '/profile?welcome=1';
+  } catch {
+    return '/profile?welcome=1';
+  }
+}
 
 export async function GET(request: NextRequest) {
   const tokenHash = request.nextUrl.searchParams.get('token_hash');
@@ -39,7 +71,7 @@ export async function GET(request: NextRequest) {
   const supabase = await supabaseServerClient();
   const { data, error } = await supabase.auth.verifyOtp({
     token_hash: tokenHash,
-    type: type as 'invite' | 'magiclink',
+    type: type as EmailOtpType,
   });
 
   // Expired and already-used look identical to the person holding the link,
@@ -47,5 +79,7 @@ export async function GET(request: NextRequest) {
   if (error || !data.user?.email) return fail('link_expired');
 
   await upsertSignedInUser(data.user.id, data.user.email);
-  return NextResponse.redirect(new URL('/profile?welcome=1', request.url));
+  return NextResponse.redirect(
+    new URL(safeRedirect(request.nextUrl.searchParams.get('redirect_to'), request.url), request.url),
+  );
 }
