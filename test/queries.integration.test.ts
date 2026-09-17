@@ -1,3 +1,4 @@
+import postgres from 'postgres';
 import { describe, it, expect, afterAll } from 'vitest';
 
 /**
@@ -329,5 +330,111 @@ describe.skipIf(!hasRealDatabase)('the pipeline lock', () => {
 
     // Still strict about genuinely wrong transitions, though.
     await expect(advanceStatus(request.id, 'ready', ['packaging'])).rejects.toThrow(ConflictError);
+  });
+});
+
+/**
+ * The append-only guarantee, and the single hole reset opens in it.
+ *
+ * sql/09-reset.sql lets reset DELETE from three otherwise-immutable tables so
+ * a restarted request looks genuinely new. That is a real weakening of the
+ * property this schema is built around, so the exact shape of the hole is
+ * asserted rather than assumed — a later edit to those trigger functions that
+ * widened it would otherwise pass every other test in the suite.
+ *
+ * Four properties, all of which must hold:
+ *   1. Without the flag, nothing can be deleted or updated.
+ *   2. With it, DELETE is permitted — that is what reset needs.
+ *   3. With it, UPDATE is STILL refused. Prose is never rewritten in place;
+ *      reset removes rows, it does not alter them.
+ *   4. `events` is never deletable, flag or no flag. The narrative log
+ *      outlives the content it describes, including the reset itself.
+ */
+describe.skipIf(!hasRealDatabase)('append-only triggers and the reset hole', () => {
+  const sql = postgres(DB_URL, { prepare: false });
+  afterAll(async () => { await sql.end(); });
+
+  /** Runs `body` against a real row and always rolls back. */
+  const attempt = async (body: (tx: postgres.TransactionSql) => Promise<unknown>) => {
+    try {
+      await sql.begin(async (tx) => {
+        await body(tx);
+        throw new Error('__rollback__');
+      });
+      return { allowed: true, message: '' };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return message === '__rollback__'
+        ? { allowed: true, message: '' }
+        : { allowed: false, message };
+    }
+  };
+
+  const setFlag = (tx: postgres.TransactionSql) =>
+    tx`select set_config('app.resetting', 'on', true)`;
+
+  it('refuses every delete and update when no reset is in progress', async () => {
+    const [version] = await sql`select id from article_versions limit 1`;
+    const [event] = await sql`select id from events limit 1`;
+    if (!version || !event) return;
+
+    // A real row id, or the row-level trigger never fires and the test passes
+    // for the wrong reason.
+    const del = await attempt((tx) => tx`delete from article_versions where id = ${version.id}`);
+    expect(del.allowed, del.message).toBe(false);
+    expect(del.message).toContain('append-only');
+
+    const upd = await attempt(
+      (tx) => tx`update article_versions set title = 'x' where id = ${version.id}`,
+    );
+    expect(upd.allowed).toBe(false);
+
+    const ev = await attempt((tx) => tx`delete from events where id = ${event.id}`);
+    expect(ev.allowed).toBe(false);
+  });
+
+  it('permits delete during a reset, but never update', async () => {
+    const [evaluation] = await sql`select id from evaluations limit 1`;
+    const [version] = await sql`select id from article_versions limit 1`;
+    if (!evaluation || !version) return;
+
+    const del = await attempt(async (tx) => {
+      await setFlag(tx);
+      await tx`delete from evaluations where id = ${evaluation.id}`;
+    });
+    expect(del.allowed, del.message).toBe(true);
+
+    // The line that matters most: the hole is DELETE-only.
+    const upd = await attempt(async (tx) => {
+      await setFlag(tx);
+      await tx`update article_versions set title = 'x' where id = ${version.id}`;
+    });
+    expect(upd.allowed).toBe(false);
+    expect(upd.message).toContain('append-only');
+  });
+
+  it('never lets the narrative log be deleted, reset or not', async () => {
+    const [event] = await sql`select id from events limit 1`;
+    if (!event) return;
+    const ev = await attempt(async (tx) => {
+      await setFlag(tx);
+      await tx`delete from events where id = ${event.id}`;
+    });
+    expect(ev.allowed).toBe(false);
+    expect(ev.message).toContain('append-only');
+  });
+
+  it('does not leak the flag past its own transaction', async () => {
+    const [version] = await sql`select id from article_versions limit 1`;
+    if (!version) return;
+    // set_config(..., true) is transaction-local. If it were session-local it
+    // would stay set on a pooled connection and silently disarm the trigger
+    // for whatever query borrowed that connection next.
+    await sql.begin(async (tx) => {
+      await setFlag(tx);
+    });
+    const after = await attempt((tx) => tx`delete from article_versions where id = ${version.id}`);
+    expect(after.allowed).toBe(false);
+    expect(after.message).toContain('append-only');
   });
 });

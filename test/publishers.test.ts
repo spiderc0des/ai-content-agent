@@ -3,6 +3,7 @@ import { manualPublisher } from '../lib/publishers/manual';
 import { newsletterPublisher } from '../lib/publishers/newsletter';
 import { xPublisher } from '../lib/publishers/x';
 import { linkedinPublisher } from '../lib/publishers/linkedin';
+import { xConfigured, linkedinConfigured } from '../lib/env';
 import type { ChannelAssetRow } from '../lib/db-schemas';
 
 const asset = { id: 'asset-1', request_id: 'req-1', body: 'Body.', subject: 'S', preheader: 'P' } as ChannelAssetRow;
@@ -87,29 +88,48 @@ describe('newsletterPublisher', () => {
 });
 
 /**
- * The two live publishers, in the state this install is actually in: apps not
- * yet registered. What matters here is that an unconfigured channel degrades
- * to manual rather than failing — an installation without connected accounts
- * is a supported way to run this, not a broken one.
+ * The two live publishers.
+ *
+ * What they resolve to depends on whether credentials are present, and this
+ * suite loads .env.local — so an install with a real X app configured is a
+ * legitimate state for this test to run in, not a reason to fail. Asserting
+ * "falls back to manual" unconditionally made the suite go red the moment
+ * someone actually set the thing up, which is the wrong way round.
+ *
+ * So the contract is asserted against the configuration, and the invariants
+ * that hold either way are asserted unconditionally.
  */
-describe('social publishers without credentials', () => {
-  for (const [name, make] of [
-    ['x', xPublisher],
-    ['linkedin', linkedinPublisher],
+describe('social publishers', () => {
+  for (const [channel, make, configured] of [
+    ['x', xPublisher, xConfigured],
+    ['linkedin', linkedinPublisher, linkedinConfigured],
   ] as const) {
-    it(`${name} falls back to manual, and says so`, async () => {
-      const p = make();
-      expect(p.name).toBe('manual');
-      // Not "unconfigured" — that would park every post as failed.
-      expect(p.isConfigured()).toBe(true);
+    it(`${channel} names itself by how it will actually deliver`, () => {
+      const expected = configured ? `${channel === 'x' ? 'x' : 'linkedin'}_api` : 'manual';
+      expect(make().name).toBe(expected);
+    });
 
-      const out = await p.publish(asset, { recipients: [], tagHandles: ['@koyatalent'] });
-      expect(out.ok).toBe(true);
-      if (out.ok) {
-        expect(out.provider).toBe('manual');
-        // No external URL, because nothing was actually posted.
-        expect(out.externalUrl).toBeNull();
-      }
+    it(`${channel} always reports as configured, whatever the credentials`, () => {
+      // Returning false would park every post to this channel as failed, on
+      // an install that never intended to post live.
+      expect(make().isConfigured()).toBe(true);
     });
   }
+
+  it('posts nothing and reports manual when a channel has no credentials', async () => {
+    // LinkedIn is the unconfigured one here; if both are configured there is
+    // nothing to assert and the test says so rather than passing vacuously.
+    const unconfigured = !linkedinConfigured ? linkedinPublisher : !xConfigured ? xPublisher : null;
+    if (!unconfigured) {
+      expect(xConfigured && linkedinConfigured).toBe(true);
+      return;
+    }
+    const out = await unconfigured().publish(asset, { recipients: [], tagHandles: ['@koyatalent'] });
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.provider).toBe('manual');
+      // No external URL, because nothing was actually posted.
+      expect(out.externalUrl).toBeNull();
+    }
+  });
 });

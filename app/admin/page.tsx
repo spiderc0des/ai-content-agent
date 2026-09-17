@@ -14,7 +14,7 @@ import InviteForm from './InviteForm';
 import EmailGroups, { type GroupRow } from './EmailGroups';
 import ChannelConnections from './ChannelConnections';
 import UsageCost from './UsageCost';
-import { xConfigured, linkedinConfigured } from '@/lib/env';
+import { xConfigured, linkedinConfigured, env } from '@/lib/env';
 
 export const dynamic = 'force-dynamic';
 
@@ -116,6 +116,7 @@ export default async function AdminPage({
       <ChannelConnections
         connections={connections}
         configured={{ x: xConfigured, linkedin: linkedinConfigured }}
+        callbackBase={env.APP_URL.replace(/\/$/, '')}
         notice={notice}
       />
 

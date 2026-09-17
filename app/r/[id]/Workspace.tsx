@@ -392,12 +392,7 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
       const result = await post(`/api/requests/${request.id}/reset`);
       if (result) {
         setOptimisticSelection(null);
-        const canceled = Number(result.publicationsCanceled ?? 0);
-        if (canceled > 0) {
-          setError(
-            `Reset. ${canceled} queued publication${canceled === 1 ? '' : 's'} cancelled — they pointed at the old drafts.`,
-          );
-        }
+        setActiveOption(1);
         router.refresh();
       }
     } finally {
@@ -591,12 +586,9 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
                 className="btn-sm"
                 label="Reset"
                 confirmLabel="Yes, reset it"
-                question="Reset and start over?"
-                detail={
-                  request.approvedVersionId
-                    ? 'Revokes the approval and cancels anything queued. Existing drafts are kept.'
-                    : 'Back to draft, ready to run again. Existing drafts are kept.'
-                }
+                question="Delete everything and start over?"
+                detail="Deletes every draft, source and evaluation. The intake and the audit stay."
+
                 busy={busy === 'reset'}
                 busyLabel="Resetting…"
                 onConfirm={resetRequest}
