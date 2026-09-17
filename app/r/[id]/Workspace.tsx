@@ -1577,7 +1577,6 @@ function PublishPanel({
                 max={bounds.max}
                 onChange={(e) => setWhen(e.target.value)}
               />
-              <p className="hint">Leave empty to send at the next worker run.</p>
             </div>
             <ConfirmButton
               tone="primary"

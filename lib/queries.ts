@@ -1827,6 +1827,23 @@ export async function resetRequest(
       'This has already been published, and resetting cannot unpublish it. Create a new request instead.',
     );
   }
+
+  // The status check above is not enough on its own. A request only becomes
+  // 'published' once EVERY channel has gone out (see syncPublishStatus), so
+  // one with X already posted and the newsletter still queued sits at
+  // 'queued' — and a reset would then delete the row recording that the X
+  // post went live, along with who a sent newsletter reached. Deleting the
+  // evidence of something that is out in the world is not a reset.
+  const [sent] = await sql`
+    select count(*)::int as n, string_agg(distinct channel::text, ', ') as channels
+    from publications where request_id = ${id} and state = 'published'`;
+  if (Number(sent!.n) > 0) {
+    throw new ConflictError(
+      `Already published to ${sent!.channels}. Resetting would delete the record of that, ` +
+        'and cannot unpublish it. Create a new request instead.',
+    );
+  }
+
   if (lockIsLive(current)) {
     throw new ConflictError(
       `The pipeline is running right now (started by ${current.pipeline_lock_by ?? 'someone'}). Wait for it to finish or stall.`,
