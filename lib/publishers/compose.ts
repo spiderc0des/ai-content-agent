@@ -9,8 +9,46 @@
  * the worker picks it up.
  */
 
-/** X's own limit for a standard post. */
-export const X_MAX_CHARS = 280;
+/**
+ * X's limit for a STANDARD account.
+ *
+ * Not from the brief — the brief's X rules cover the hook, one idea, line
+ * breaks and hashtags, and say nothing about length. 280 is the platform's
+ * own limit, and it is tier-dependent: X Premium allows 4,000 and Premium+
+ * 25,000. Overridable for that reason, because silently capping a Premium
+ * account at 280 is a limit the platform is not imposing.
+ */
+export const X_MAX_CHARS = Number(process.env.X_POST_MAX_CHARS ?? 280);
+
+/**
+ * How many characters X thinks a post is, which is not `text.length`.
+ *
+ * Two rules move the number in opposite directions, and both matter:
+ *
+ *   • Every URL counts as 23, however long it is — X rewrites links to t.co.
+ *     Counting the raw string rejects posts X would happily accept, and a
+ *     content post with a source link is exactly where that bites.
+ *   • Emoji count as 2. JavaScript already counts most of them as 2 (a
+ *     surrogate pair), but not all: a BMP emoji like ☀ is 1 to JS and 2 to X.
+ *     That is the dangerous direction — undercounting means accepting a post
+ *     X then rejects, after it has been queued and released.
+ *
+ * Everything else is one per code point, so an astral non-emoji character is
+ * 1 rather than the 2 that `.length` reports. This is not full twitter-text
+ * parity, which needs their weighted-range table; it is the two rules that
+ * account for essentially every real post this system writes.
+ */
+export function xLength(text: string): number {
+  // Matched first so their contents are not also counted as characters.
+  const urls = text.match(/https?:\/\/[^\s]+/g) ?? [];
+  const withoutUrls = text.replace(/https?:\/\/[^\s]+/g, '');
+
+  let count = urls.length * 23;
+  for (const char of withoutUrls) {
+    count += /\p{Extended_Pictographic}/u.test(char) ? 2 : 1;
+  }
+  return count;
+}
 
 export type Composed = { ok: true; text: string } | { ok: false; error: string };
 
@@ -33,11 +71,12 @@ export function composeXPost(body: string, tagHandles: string[]): Composed {
   const tags = dedupe(tagHandles);
 
   if (!tags.length) {
-    return base.length <= X_MAX_CHARS
+    const length = xLength(base);
+    return length <= X_MAX_CHARS
       ? { ok: true, text: base }
       : {
           ok: false,
-          error: `the post is ${base.length} characters, ${base.length - X_MAX_CHARS} over X's limit of ${X_MAX_CHARS}`,
+          error: `the post is ${length} characters, ${length - X_MAX_CHARS} over X's limit of ${X_MAX_CHARS}`,
         };
   }
 
@@ -45,18 +84,19 @@ export function composeXPost(body: string, tagHandles: string[]): Composed {
   const missing = tags.filter((t) => !mentions(base, t));
   const text = missing.length ? `${base}\n\n${missing.join(' ')}` : base;
 
-  if (text.length > X_MAX_CHARS) {
-    const over = text.length - X_MAX_CHARS;
-    const added = text.length - base.length;
+  const length = xLength(text);
+  if (length > X_MAX_CHARS) {
+    const over = length - X_MAX_CHARS;
+    const added = length - xLength(base);
     // Shows its own arithmetic. "288 characters" alone invites the question
     // "288 of what?" — the post passed its own 280 check before the tags
     // existed, so the number only makes sense broken into its two parts.
     return {
       ok: false,
       error:
-        `the post is ${base.length} characters and tagging ${missing.length} ` +
+        `the post is ${xLength(base)} characters and tagging ${missing.length} ` +
         `account${missing.length === 1 ? '' : 's'} adds ${added} more — ` +
-        `${text.length} in total, ${over} over X's limit of ${X_MAX_CHARS}. ` +
+        `${length} in total, ${over} over X's limit of ${X_MAX_CHARS}. ` +
         'Shorten the post or tag fewer accounts.',
     };
   }

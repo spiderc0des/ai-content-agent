@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { composeXPost, composeLinkedInPost, X_MAX_CHARS } from '../lib/publishers/compose';
+import { composeXPost, composeLinkedInPost, xLength, X_MAX_CHARS } from '../lib/publishers/compose';
 
 /**
  * The step where a post becomes irreversible. X rejects a post one character
@@ -94,5 +94,52 @@ describe('composeLinkedInPost', () => {
     expect(ok('Working with @koya-talent on this.', ['@koya-talent'])).toBe(
       'Working with @koya-talent on this.',
     );
+  });
+});
+
+/**
+ * X does not count characters the way `.length` does, and the difference runs
+ * both ways. Undercounting is the dangerous one: it means accepting a post X
+ * then rejects, after it has been queued and released.
+ */
+describe('xLength — counting the way X counts', () => {
+  it('counts plain text one per character', () => {
+    expect(xLength('hello')).toBe(5);
+  });
+
+  it('counts any URL as 23, however long', () => {
+    // X rewrites every link to a 23-character t.co URL. Counting the raw
+    // string rejects posts X would accept — and a content post with a source
+    // link is exactly where that bites.
+    const long = 'https://example.com/' + 'a'.repeat(300);
+    expect(xLength(long)).toBe(23);
+    expect(xLength(`Read this: ${long}`)).toBe('Read this: '.length + 23);
+  });
+
+  it('counts two URLs separately', () => {
+    expect(xLength('https://a.example https://b.example')).toBe(23 + 1 + 23);
+  });
+
+  it('counts emoji as two, including ones JavaScript calls one character', () => {
+    // ☀ is a single UTF-16 unit, so .length says 1 and X says 2. That is the
+    // undercount that would let an over-length post through.
+    expect('☀'.length).toBe(1);
+    expect(xLength('☀')).toBe(2);
+    expect(xLength('🎉')).toBe(2);
+  });
+
+  it('does not double-count an astral non-emoji character', () => {
+    // .length reports 2 for a surrogate pair; X counts one character.
+    expect('𝕏'.length).toBe(2);
+    expect(xLength('𝕏')).toBe(1);
+  });
+
+  it('is what the length check actually uses', () => {
+    // A post that is over 280 by raw .length but under by X's count must be
+    // accepted, or every post carrying a long link is wrongly refused.
+    const post = `A short hook. https://example.com/${'b'.repeat(400)}`;
+    expect(post.length).toBeGreaterThan(280);
+    expect(xLength(post)).toBeLessThan(280);
+    expect(composeXPost(post, []).ok).toBe(true);
   });
 });

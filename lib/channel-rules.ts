@@ -1,5 +1,9 @@
 import type { Channel, LinkedInPost, XPost, Newsletter } from './schemas';
 import { wordCount, sentenceCount, paragraphs } from './seo';
+// One definition of "how long is this X post", shared with the composer that
+// runs at queue time. Two counts would disagree, and a post that passed its
+// rule check would then be refused on its way out — or worse, the reverse.
+import { X_MAX_CHARS, xLength } from './publishers/compose';
 
 /**
  * The platform formatting rules from the brief, checked deterministically —
@@ -33,8 +37,6 @@ export interface RuleReport {
   word_count: number;
 }
 
-/** X's own limit for a standard post. */
-const X_MAX_CHARS = 280;
 const NEWSLETTER_MIN_WORDS = 250;
 const NEWSLETTER_MAX_WORDS = 600;
 
@@ -163,8 +165,9 @@ export function checkX(post: XPost): RuleReport {
     {
       key: 'fits_the_platform',
       label: `Fits in ${X_MAX_CHARS} characters`,
-      pass: body.length <= X_MAX_CHARS,
-      detail: `${body.length} characters`,
+      pass: xLength(body) <= X_MAX_CHARS,
+      // X's own count: URLs are 23 whatever their length, emoji are 2.
+      detail: `${xLength(body)} characters`,
       required: true,
     },
   ];
@@ -285,8 +288,8 @@ export function failureInstructions(channel: Channel, r: RuleReport, body: strin
   return failed
     .map((c) => {
       if (channel === 'x' && c.key === 'fits_the_platform') {
-        const over = body.length - X_MAX_CHARS;
-        return `The post is ${body.length} characters — ${over} too many. Cut at least ${over + 20} characters (aim for about 180 in total, not 280).`;
+        const over = xLength(body) - X_MAX_CHARS;
+        return `The post is ${xLength(body)} characters — ${over} too many. Cut at least ${over + 20} characters (aim for about 180 in total, not ${X_MAX_CHARS}).`;
       }
       if (channel === 'newsletter' && c.key === 'word_band') {
         if (r.word_count < NEWSLETTER_MIN_WORDS) {
