@@ -1,18 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cronEnabled } from '@/lib/env';
 import { isAuthorisedCronRequest } from '@/lib/cron-auth';
-import {
-  claimDuePublications,
-  getAsset,
-  markPublished,
-  markPublishFailed,
-  syncPublishStatus,
-  logEvent,
-  recipientsOf,
-  recordRecipients,
-  getEmailGroup,
-} from '@/lib/queries';
-import { publisherFor } from '@/lib/publishers';
+import { claimDuePublications, syncPublishStatus } from '@/lib/queries';
+import { releasePublication } from '@/lib/release';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -49,87 +39,10 @@ export async function GET(request: NextRequest) {
 
   for (const publication of due) {
     touched.add(publication.request_id);
-    const publisher = publisherFor(publication.channel);
-
-    try {
-      const asset = await getAsset(publication.asset_id);
-      if (!asset) throw new Error('the channel asset no longer exists');
-
-      if (!publisher.isConfigured()) {
-        throw new Error(`the ${publication.channel} publisher is not configured`);
-      }
-
-      // Resolved NOW, not when this was queued. Someone added to the list
-      // yesterday is on this send; someone who unsubscribed yesterday is not.
-      const recipients = publication.email_group_id
-        ? await recipientsOf(publication.email_group_id)
-        : [];
-      const group = publication.email_group_id
-        ? await getEmailGroup(publication.email_group_id)
-        : null;
-
-      const result = await publisher.publish(asset, {
-        recipients,
-        groupName: group?.name ?? null,
-        tagHandles: publication.tag_handles,
-      });
-
-      if (result.ok) {
-        // Who it actually went to, written before it is marked published so
-        // there is no window where the row says "published" and cannot say
-        // to whom.
-        if (publication.email_group_id) {
-          await recordRecipients(publication.id, recipients);
-        }
-        await markPublished(publication.id, {
-          provider: result.provider,
-          providerId: result.providerId,
-          externalUrl: result.externalUrl,
-        });
-        published++;
-        await logEvent({
-          requestId: publication.request_id,
-          actor: 'cron',
-          stage: 'publishing',
-          step: `publish_${publication.channel}`,
-          ok: true,
-          detail: {
-            provider: result.provider,
-            external_url: result.externalUrl,
-            recipients: recipients.length || undefined,
-            // "198 delivered, 2 rejected" — a partial send is neither a
-            // success nor a failure, and the log is where that has to say so.
-            delivery: result.note,
-            tagged: publication.tag_handles.length ? publication.tag_handles : undefined,
-          },
-        });
-      } else {
-        await markPublishFailed(publication.id, result.error);
-        failed++;
-        await logEvent({
-          requestId: publication.request_id,
-          actor: 'cron',
-          stage: 'publishing',
-          step: `publish_${publication.channel}`,
-          ok: false,
-          detail: { provider: result.provider, error: result.error, retryable: result.retryable },
-        });
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      // A claimed row must never be left in 'publishing' — it would be
-      // invisible to every future tick and never retried.
-      await markPublishFailed(publication.id, message).catch(() => {});
-      failed++;
-      await logEvent({
-        requestId: publication.request_id,
-        actor: 'cron',
-        stage: 'publishing',
-        step: `publish_${publication.channel}`,
-        ok: false,
-        detail: { error: message },
-      }).catch(() => {});
-    }
+    // One shared path with the Publish now button — see lib/release.ts.
+    const outcome = await releasePublication(publication, 'cron');
+    if (outcome.ok) published++;
+    else failed++;
   }
 
   for (const requestId of touched) {

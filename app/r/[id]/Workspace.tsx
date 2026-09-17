@@ -196,6 +196,15 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
 
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  /**
+   * Which part of the page an error belongs to.
+   *
+   * Every action funnelled its failure into one banner at the top, inside the
+   * pipeline card. A publishing error would appear several screens above the
+   * publishing controls that caused it — you press a button, nothing visibly
+   * happens, and the explanation is somewhere you are not looking.
+   */
+  const [errorWhere, setErrorWhere] = useState<'pipeline' | 'publish'>('pipeline');
   const [polling, setPolling] = useState(false);
   // The last thing the status endpoint said. Preferred over the server-
   // rendered props while a run is in flight, because it is seconds old rather
@@ -364,6 +373,7 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
   async function startPipeline() {
     setBusy('pipeline');
     setError('');
+    setErrorWhere('pipeline');
     try {
       const result = await post(`/api/requests/${request.id}/start`);
       if (result && result.started === false) {
@@ -388,6 +398,7 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
   async function resetRequest() {
     setBusy('reset');
     setError('');
+    setErrorWhere('pipeline');
     try {
       const result = await post(`/api/requests/${request.id}/reset`);
       if (result) {
@@ -403,6 +414,7 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
   async function review(action: 'approve' | 'reject' | 'revise' | 'select', extra: Record<string, unknown> = {}) {
     setBusy(action);
     setError('');
+    setErrorWhere('pipeline');
     try {
       // One round trip on the happy path.
       //
@@ -458,6 +470,7 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
   async function packageChannels() {
     setBusy('package');
     setError('');
+    setErrorWhere('pipeline');
     try {
       const result = await post(`/api/requests/${request.id}/package`);
       if (result) {
@@ -476,6 +489,7 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
   ) {
     setBusy('queue');
     setError('');
+    setErrorWhere('publish');
     try {
       // Read the version immediately before writing, rather than sending
       // whatever this page happened to be rendered with.
@@ -713,7 +727,9 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
           </div>
         )}
 
-        {error && <div className="panel panel-danger mt-4">{error}</div>}
+        {error && errorWhere === 'pipeline' && (
+          <div className="panel panel-danger mt-4">{error}</div>
+        )}
       </section>
 
       {/* ── Options ────────────────────────────────────────────────────── */}
@@ -788,6 +804,7 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
       {approved && data.assets.some((a) => a.rulesPass) && (
         <PublishPanel
           status={request.status}
+          error={errorWhere === 'publish' ? error : ''}
           publications={data.publications}
           assets={data.assets}
           emailGroups={data.emailGroups}
@@ -1313,6 +1330,7 @@ interface ChannelTargets {
 
 function PublishPanel({
   status,
+  error,
   publications,
   assets,
   emailGroups,
@@ -1323,6 +1341,8 @@ function PublishPanel({
 }: {
   /** The request's status — only 'ready' and 'queued' can take a new publication. */
   status: string;
+  /** A failure from the last queue attempt, shown here rather than at the top. */
+  error: string;
   publications: WorkspaceData['publications'];
   /** Only rule-passing assets can be queued, so only they are offered. */
   assets: WorkspaceData['assets'];
@@ -1338,13 +1358,19 @@ function PublishPanel({
   ) => void;
 }) {
   const [when, setWhen] = useState('');
-  const live = publications.filter((p) => p.state !== 'canceled');
+  // Cancelled rows are SHOWN, not filtered out. Hiding them made a cancel
+  // look like it had done nothing: the row simply vanished, and whatever was
+  // left — often another channel still queued — read as the thing you had
+  // just cancelled.
+  const live = publications;
   const bounds = dateTimeLocalBounds('future', 2);
 
   // A channel already live cannot be queued again — the database refuses it
   // (publications_one_live_per_channel), so offering it would be an error
   // waiting to happen rather than a choice.
-  const alreadyLive = new Set(live.filter((p) => p.state !== 'failed').map((p) => p.channel));
+  const alreadyLive = new Set(
+    live.filter((p) => p.state !== 'failed' && p.state !== 'canceled').map((p) => p.channel),
+  );
 
   // And once everything has gone out the request is 'published', which
   // guard_publication_insert() refuses outright — it takes only 'ready' or
@@ -1387,13 +1413,25 @@ function PublishPanel({
     <section className="card space-y-4">
       <h2 className="font-semibold">Publishing</h2>
 
+      {error && <div className="panel panel-danger">{error}</div>}
+
       {live.length > 0 && (
         <ul className="space-y-2 text-sm">
           {live.map((p) => (
             <li key={p.id} className="flex flex-wrap items-center gap-2">
               <span className="badge">{CHANNEL_LABEL[p.channel] ?? p.channel}</span>
-              <span className={p.state === 'published' ? 'badge badge-success' : p.state === 'failed' ? 'badge badge-danger' : 'badge badge-accent'}>
-                {p.state}
+              <span
+                className={
+                  p.state === 'published'
+                    ? 'badge badge-success'
+                    : p.state === 'failed'
+                      ? 'badge badge-danger'
+                      : p.state === 'canceled'
+                        ? 'badge'
+                        : 'badge badge-accent'
+                }
+              >
+                {p.state === 'canceled' ? 'cancelled' : p.state}
               </span>
               {p.emailGroupName && (
                 <span style={{ color: 'var(--ink-soft)' }}>
@@ -1539,16 +1577,18 @@ function PublishPanel({
                 max={bounds.max}
                 onChange={(e) => setWhen(e.target.value)}
               />
-              <p className="hint">Empty releases at the next tick.</p>
+              <p className="hint">Leave empty to send at the next worker run.</p>
             </div>
             <ConfirmButton
               tone="primary"
               label={when ? 'Schedule' : 'Queue now'}
               confirmLabel={when ? 'Yes, schedule it' : 'Yes, publish it'}
               question={
-                when
-                  ? `Schedule ${summary} for ${new Date(when).toLocaleString()}?`
-                  : `Queue ${summary} to publish now?`
+                picked.length === 0
+                  ? 'Pick a channel first.'
+                  : when
+                    ? `Schedule ${summary} for ${new Date(when).toLocaleString()}?`
+                    : `Queue ${summary} to publish now?`
               }
               detail={
                 chosenGroup

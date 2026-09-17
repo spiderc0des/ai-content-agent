@@ -30,8 +30,14 @@ describe('composeXPost', () => {
     const r = composeXPost(body, ['@koyatalent']);
     expect(r.ok).toBe(false);
     if (!r.ok) {
-      expect(r.error).toContain('over X');
-      expect(r.error).toMatch(/\d+ characters/);
+      // The message shows its own arithmetic: the post's own length, what the
+      // tags added, the total, and the overage. "288 characters" on its own
+      // invites "288 of what?", because the post passed its 280 check before
+      // the tags existed.
+      expect(r.error).toContain('the post is 270 characters');
+      expect(r.error).toContain('adds');
+      expect(r.error).toContain('in total');
+      expect(r.error).toContain("over X's limit of 280");
     }
   });
 
