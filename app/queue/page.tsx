@@ -92,7 +92,16 @@ export default async function QueuePage() {
               </div>
               {p.last_error && (
                 <p className="mt-2 text-sm" style={{ color: 'var(--danger)' }}>
-                  {p.last_error} · {p.attempts} attempt{p.attempts === 1 ? '' : 's'}
+                  {p.last_error}{' '}
+                  <span style={{ color: 'var(--ink-faint)' }}>
+                    · {p.attempts} attempt{p.attempts === 1 ? '' : 's'} ·{' '}
+                    {/* 'failed' means nothing further is coming on its own —
+                        worth saying, because a row that will retry and a row
+                        that will not look identical otherwise. */}
+                    {p.state === 'failed'
+                      ? 'not retrying — fix the cause and publish again'
+                      : 'will be retried'}
+                  </span>
                 </p>
               )}
             </li>

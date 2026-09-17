@@ -100,6 +100,22 @@ export function xPublisher(): Publisher {
         };
       }
 
+      // X bills per post — pay-per-use is the default for new developers, at
+      // roughly $0.015 a post. 402 means the account has run out, which no
+      // amount of retrying fixes: it needs someone to add credits. Retrying
+      // it every worker run would burn the attempt budget and then mark it
+      // permanently failed, which is the opposite of what should happen.
+      if (res.status === 402) {
+        return {
+          ok: false,
+          provider: 'x_api',
+          retryable: false,
+          error:
+            'X refused the post: the account is out of API credits. X bills per post — ' +
+            'top up in the X developer portal, then publish this again.',
+        };
+      }
+
       // 403 is usually a missing tweet.write scope or a duplicate post; 400 is
       // a malformed one. Neither improves with time.
       if (res.status === 400 || res.status === 403) {
