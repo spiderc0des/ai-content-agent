@@ -92,7 +92,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             ) : (
               <div className="flex items-center gap-2">
                 <ThemeToggle current={theme ?? 'system'} />
-                <a href="/login' className='btn btn-primary">
+                <a href="/login" className="btn btn-primary">
                   Sign in
                 </a>
               </div>
