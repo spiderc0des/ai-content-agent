@@ -24,7 +24,7 @@ export default async function QueuePage() {
     <div>
       <h1 className="mb-1 text-xl font-semibold">Publishing queue</h1>
       <p className="mb-6 text-sm" style={{ color: 'var(--ink-soft)' }}>
-        Waiting to be released. The worker runs on a schedule; Publish now sends immediately.
+        Waiting to be released. Publish now sends immediately.
       </p>
 
       {queue.length === 0 ? (
