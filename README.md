@@ -98,6 +98,36 @@ handler remembering to check.
 turns a duplicate release into a duplicate-key error rather than a second post
 on someone's feed.
 
+## Deploying
+
+Vercel's **Hobby plan allows one cron run per day**, which is not a cadence a
+publishing queue can work on: a post scheduled for 2pm would go out the
+following morning, and a pipeline whose driver died would sit untouched for a
+day. `vercel.json` therefore keeps a daily run as a backstop, and
+`.github/workflows/cron.yml` drives the real cadence every 30 minutes.
+
+Set two repository secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+| --- | --- |
+| `APP_URL` | `https://your-app.vercel.app`, no trailing slash |
+| `CRON_SECRET` | the same value as in your Vercel environment variables |
+
+Until both exist the workflow runs and exits without doing anything. Run it by
+hand from the Actions tab to check it before waiting for a slot.
+
+Both endpoints are bearer-guarded, so anything that can send an
+`Authorization: Bearer` header works — an external pinger, or Vercel Cron on a
+paid plan, in which case put the schedules back to `*/15` and `*/5` and delete
+the workflow.
+
+GitHub bills a minimum of one minute per job, so every 30 minutes is about
+1,440 minutes a month — inside the 2,000 free minutes for a private repo, and
+unmetered on a public one. That is why both endpoints are called from a single
+job rather than two.
+
+---
+
 **One file constructs every Anthropic request.** `lib/claude.ts` returns a
 discriminated `ClaudeOutcome<T>` — a refusal, a rate limit, a truncated reply,
 and an API error are distinguishable, and `stop_reason` is checked *before* the

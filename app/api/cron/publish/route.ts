@@ -21,7 +21,9 @@ export const dynamic = 'force-dynamic';
 /**
  * GET /api/cron/publish — release everything that has come due.
  *
- * Runs every 15 minutes from vercel.json, and is safe to hit by hand.
+ * Driven by .github/workflows/cron.yml, with a daily backstop in vercel.json
+ * — Vercel's Hobby plan allows only one cron run per day, which is not a
+ * cadence a publishing queue can work on. Safe to hit by hand at any time.
  *
  * Concurrency is handled in the claim, not here: claimDuePublications() uses
  * FOR UPDATE SKIP LOCKED and flips state to 'publishing' in the same
