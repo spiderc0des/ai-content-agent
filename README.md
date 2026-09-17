@@ -100,6 +100,24 @@ on someone's feed.
 
 ## Deploying
 
+Live at **https://koya-content-agent.vercel.app**.
+
+Five places need the deployed URL, and a stale one in any of them fails
+silently — the app serves every page correctly and then hands a provider a
+callback it has never heard of. `/admin` warns if `APP_URL` disagrees with the
+host actually serving it.
+
+| Where | Set to |
+| --- | --- |
+| Vercel → Environment Variables | `APP_URL=https://koya-content-agent.vercel.app` |
+| Supabase → Authentication → URL Configuration | Site URL, plus `https://koya-content-agent.vercel.app/**` in Redirect URLs |
+| X app → User authentication settings | Callback `https://koya-content-agent.vercel.app/api/admin/channels/x/callback` |
+| LinkedIn app → Auth | Callback `https://koya-content-agent.vercel.app/api/admin/channels/linkedin/callback` |
+| GitHub → Secrets → Actions | `APP_URL` and `CRON_SECRET` |
+
+Every variable in `.env.example` needs a value in Vercel too — the app refuses
+to start without the required ones and names what is missing.
+
 Vercel's **Hobby plan allows one cron run per day**, which is not a cadence a
 publishing queue can work on: a post scheduled for 2pm would go out the
 following morning, and a pipeline whose driver died would sit untouched for a

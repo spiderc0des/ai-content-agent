@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import { headers } from 'next/headers';
 import { requireUser, AuthError } from '@/lib/auth';
 import {
   listAppUsers,
@@ -52,7 +53,8 @@ export default async function AdminPage({
     );
   }
 
-  const [users, groups, connections, byStage, byRequest, requestCount, query] = await Promise.all([
+  const [users, groups, connections, byStage, byRequest, requestCount, query, headerList] =
+    await Promise.all([
     listAppUsers(),
     listEmailGroups(true),
     listChannelConnections(),
@@ -60,7 +62,28 @@ export default async function AdminPage({
     usageByRequest(8),
     countRequestsWithUsage(),
     searchParams,
+    headers(),
   ]);
+
+  /**
+   * APP_URL is what the app builds absolute links from — OAuth redirect_uris
+   * and invitation links — and it is the one setting that breaks nothing
+   * locally and everything in production. A deploy carrying a localhost
+   * APP_URL serves every page correctly and then sends an OAuth redirect_uri
+   * the provider has never heard of, which surfaces as an error screen on
+   * their domain with nothing pointing back here.
+   *
+   * So it is checked against the host actually serving this request.
+   */
+  const servedHost = headerList.get('x-forwarded-host') ?? headerList.get('host') ?? '';
+  const configuredHost = (() => {
+    try {
+      return new URL(env.APP_URL).host;
+    } catch {
+      return '';
+    }
+  })();
+  const urlMismatch = Boolean(servedHost && configuredHost && servedHost !== configuredHost);
   const pending = users.filter((u) => !u.active);
 
   const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
@@ -82,6 +105,18 @@ export default async function AdminPage({
   return (
     <div className="mx-auto max-w-4xl">
       <h1 className="mb-6 text-xl font-semibold">Admin</h1>
+
+      {urlMismatch && (
+        <div className="panel panel-danger mb-6 text-sm">
+          <strong>APP_URL does not match this deployment.</strong>
+          <p className="mt-1">
+            It is set to <code>{env.APP_URL}</code>, but you are on{' '}
+            <code>{servedHost}</code>. Invitation links and OAuth callbacks are built from
+            APP_URL, so both will point at the wrong place until it is corrected and the app
+            redeployed.
+          </p>
+        </div>
+      )}
 
       <UsageCost byStage={byStage} byRequest={byRequest} requestCount={requestCount} />
 
