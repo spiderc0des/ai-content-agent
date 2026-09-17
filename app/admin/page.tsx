@@ -1,11 +1,19 @@
 import { redirect } from 'next/navigation';
 import { requireUser, AuthError } from '@/lib/auth';
-import { listAppUsers, listEmailGroups, listChannelConnections } from '@/lib/queries';
+import {
+  listAppUsers,
+  listEmailGroups,
+  listChannelConnections,
+  usageByStage,
+  usageByRequest,
+  countRequestsWithUsage,
+} from '@/lib/queries';
 import NotAuthorized from '../NotAuthorized';
 import UserAccessTable, { type Row } from './UserAccessTable';
 import InviteForm from './InviteForm';
 import EmailGroups, { type GroupRow } from './EmailGroups';
 import ChannelConnections from './ChannelConnections';
+import UsageCost from './UsageCost';
 import { xConfigured, linkedinConfigured } from '@/lib/env';
 
 export const dynamic = 'force-dynamic';
@@ -44,10 +52,13 @@ export default async function AdminPage({
     );
   }
 
-  const [users, groups, connections, query] = await Promise.all([
+  const [users, groups, connections, byStage, byRequest, requestCount, query] = await Promise.all([
     listAppUsers(),
     listEmailGroups(true),
     listChannelConnections(),
+    usageByStage(),
+    usageByRequest(8),
+    countRequestsWithUsage(),
     searchParams,
   ]);
   const pending = users.filter((u) => !u.active);
@@ -101,6 +112,10 @@ export default async function AdminPage({
         configured={{ x: xConfigured, linkedin: linkedinConfigured }}
         notice={notice}
       />
+
+      <div className="my-8 border-t" style={{ borderColor: 'var(--rule)' }} />
+
+      <UsageCost byStage={byStage} byRequest={byRequest} requestCount={requestCount} />
 
       <div className="card mt-6 text-sm" style={{ color: 'var(--ink-soft)' }}>
         <h2

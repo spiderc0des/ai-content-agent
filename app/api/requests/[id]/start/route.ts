@@ -7,7 +7,7 @@ import { errorResponse } from '@/lib/api-helpers';
 
 // The response returns in milliseconds; the work carries on behind it via
 // after(). maxDuration is what bounds that background work, not the response.
-export const maxDuration = 800;
+export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
 
 /**

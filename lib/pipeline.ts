@@ -1362,13 +1362,33 @@ export function progressOf(status: string): number {
  */
 const MAX_STAGES_PER_RUN = 24;
 
+/**
+ * How long one driver run is allowed to keep going.
+ *
+ * The platform kills the function at `maxDuration` — 300 seconds on Vercel's
+ * Hobby plan — and a full pipeline averages around thirteen minutes, so a run
+ * WILL be cut short. The question is only whether it stops cleanly or is
+ * killed mid-stage.
+ *
+ * Killed mid-stage is much worse than it sounds: the stage_run stays 'running'
+ * forever, the lock is held until it goes stale, and a Claude call that was
+ * already paid for is thrown away. So the driver checks the clock between
+ * stages and hands back voluntarily, leaving the request in a resumable state
+ * with the lock released. /api/cron/resume picks it straight up.
+ *
+ * Set below the platform limit by enough to finish the stage in flight: the
+ * check happens BEFORE starting a stage, and the slowest one (research)
+ * averages about 220 seconds.
+ */
+const RUN_BUDGET_MS = Number(process.env.PIPELINE_RUN_BUDGET_MS ?? 240_000);
+
 /** Statuses the driver stops at because only a person can move them on. */
 const WAITS_FOR_A_HUMAN = new Set(['awaiting_review', 'rejected', 'blocked']);
 
 export interface DriveResult {
   stagesRun: number;
   finalStatus: string;
-  stoppedBecause: 'needs_a_human' | 'finished' | 'failed' | 'stage_cap' | 'lock_lost';
+  stoppedBecause: 'needs_a_human' | 'finished' | 'failed' | 'stage_cap' | 'lock_lost' | 'out_of_time';
   message: string;
 }
 
@@ -1388,6 +1408,7 @@ export interface DriveResult {
  * it here when the run ends, however it ends.
  */
 export async function drivePipeline(requestId: string, actor: string): Promise<DriveResult> {
+  const startedAt = Date.now();
   let stagesRun = 0;
   let finalStatus = 'unknown';
   // Guards against a stage that keeps being chosen but never changes the
@@ -1424,6 +1445,20 @@ export async function drivePipeline(requestId: string, actor: string): Promise<D
               : request.status === 'blocked'
                 ? 'Blocked — the request needs more to work with.'
                 : 'Rejected — waiting on a person.',
+        };
+      }
+
+      // Out of time — stop between stages rather than be killed inside one.
+      // The lock is released in the finally block below, so the resume worker
+      // sees an unowned request in a machine status and carries on from here.
+      if (stagesRun > 0 && Date.now() - startedAt > RUN_BUDGET_MS) {
+        return {
+          stagesRun,
+          finalStatus,
+          stoppedBecause: 'out_of_time',
+          message:
+            `Ran ${stagesRun} stage${stagesRun === 1 ? '' : 's'} and stopped at the time limit. ` +
+            'The next scheduled run picks this up where it left off.',
         };
       }
 

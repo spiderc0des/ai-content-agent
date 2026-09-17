@@ -378,6 +378,33 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
     }
   }
 
+  /**
+   * Back to draft, so the pipeline can be run again.
+   *
+   * Does not start it: reset is usually reached for because something went
+   * wrong, and the next useful step is often to change the intake rather than
+   * immediately spend another run's worth of Claude calls.
+   */
+  async function resetRequest() {
+    setBusy('reset');
+    setError('');
+    try {
+      const result = await post(`/api/requests/${request.id}/reset`);
+      if (result) {
+        setOptimisticSelection(null);
+        const canceled = Number(result.publicationsCanceled ?? 0);
+        if (canceled > 0) {
+          setError(
+            `Reset. ${canceled} queued publication${canceled === 1 ? '' : 's'} cancelled — they pointed at the old drafts.`,
+          );
+        }
+        router.refresh();
+      }
+    } finally {
+      setBusy('');
+    }
+  }
+
   async function review(action: 'approve' | 'reject' | 'revise' | 'select', extra: Record<string, unknown> = {}) {
     setBusy(action);
     setError('');
@@ -552,6 +579,28 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
                       ? 'Run pipeline'
                       : 'Resume'}
               </button>
+            )}
+            {/* Reset is the way out when Resume is not: a request that is
+                finished, stuck past the point a retry helps, or simply wants
+                running again from scratch. Hidden once published, because
+                nothing here can unpublish a post. */}
+            {capabilities.canRun && !running && status !== 'published' && status !== 'draft' && (
+              <ConfirmButton
+                tone="danger"
+                layout="popover"
+                className="btn-sm"
+                label="Reset"
+                confirmLabel="Yes, reset it"
+                question="Reset and start over?"
+                detail={
+                  request.approvedVersionId
+                    ? 'Revokes the approval and cancels anything queued. Existing drafts are kept.'
+                    : 'Back to draft, ready to run again. Existing drafts are kept.'
+                }
+                busy={busy === 'reset'}
+                busyLabel="Resetting…"
+                onConfirm={resetRequest}
+              />
             )}
           </div>
         </div>

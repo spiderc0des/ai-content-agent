@@ -1696,3 +1696,172 @@ export async function disconnectChannel(channel: Channel): Promise<boolean> {
     delete from channel_credentials where channel = ${channel}::channel returning channel`;
   return rows.length > 0;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Usage and cost — what the pipeline actually spent
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+export interface UsageRow {
+  model: string | null;
+  stage: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+/**
+ * Token usage grouped by model and stage.
+ *
+ * Only OK runs. A failed stage that never got a reply cost nothing, and
+ * including its zeroed columns would inflate the call count without moving
+ * the total — making the per-call average lie.
+ */
+export async function usageByStage(sinceDays: number | null = null): Promise<UsageRow[]> {
+  const rows = await sql`
+    select model, stage::text as stage,
+           count(*)::int                       as calls,
+           coalesce(sum(input_tokens), 0)::bigint       as input_tokens,
+           coalesce(sum(output_tokens), 0)::bigint      as output_tokens,
+           coalesce(sum(cache_read_tokens), 0)::bigint  as cache_read_tokens,
+           coalesce(sum(cache_write_tokens), 0)::bigint as cache_write_tokens
+    from stage_runs
+    where status = 'ok'
+      and ${sinceDays === null ? sql`true` : sql`started_at > now() - make_interval(days => ${sinceDays})`}
+    group by model, stage
+    order by sum(coalesce(output_tokens, 0)) desc`;
+  return rows.map((r) => ({
+    model: r.model ? String(r.model) : null,
+    stage: String(r.stage),
+    calls: Number(r.calls),
+    inputTokens: Number(r.input_tokens),
+    outputTokens: Number(r.output_tokens),
+    cacheReadTokens: Number(r.cache_read_tokens),
+    cacheWriteTokens: Number(r.cache_write_tokens),
+  }));
+}
+
+export interface RequestUsageRow extends UsageRow {
+  requestId: string;
+  title: string;
+  status: string;
+  updatedAt: Date;
+}
+
+/** The most expensive recent requests, so a runaway one is visible. */
+export async function usageByRequest(limit = 10): Promise<RequestUsageRow[]> {
+  const rows = await sql`
+    select r.id, r.status::text as status, r.updated_at,
+           coalesce(nullif(r.title_hint, ''), left(r.raw_idea, 70)) as title,
+           max(s.model)                                 as model,
+           count(*)::int                                as calls,
+           coalesce(sum(s.input_tokens), 0)::bigint        as input_tokens,
+           coalesce(sum(s.output_tokens), 0)::bigint       as output_tokens,
+           coalesce(sum(s.cache_read_tokens), 0)::bigint   as cache_read_tokens,
+           coalesce(sum(s.cache_write_tokens), 0)::bigint  as cache_write_tokens
+    from stage_runs s
+    join content_requests r on r.id = s.request_id
+    where s.status = 'ok' and r.deleted_at is null
+    group by r.id
+    order by sum(coalesce(s.output_tokens, 0)) desc
+    limit ${limit}`;
+  return rows.map((r) => ({
+    requestId: String(r.id),
+    title: String(r.title ?? ''),
+    status: String(r.status),
+    updatedAt: new Date(String(r.updated_at)),
+    stage: 'all',
+    model: r.model ? String(r.model) : null,
+    calls: Number(r.calls),
+    inputTokens: Number(r.input_tokens),
+    outputTokens: Number(r.output_tokens),
+    cacheReadTokens: Number(r.cache_read_tokens),
+    cacheWriteTokens: Number(r.cache_write_tokens),
+  }));
+}
+
+/** How many requests the spend is spread across, for a per-request average. */
+export async function countRequestsWithUsage(): Promise<number> {
+  const [row] = await sql`
+    select count(distinct request_id)::int as n from stage_runs where status = 'ok'`;
+  return Number(row!.n);
+}
+
+/**
+ * Put a request back to the start so the pipeline can run again.
+ *
+ * What it does NOT do is delete anything. `article_versions`, `reviews`,
+ * `evaluations` and `events` reject DELETE by trigger, and that is the point:
+ * a reset is "run this again", not "pretend this never happened". Re-running
+ * writes new revisions onto the same option slots, so the drafts that already
+ * exist stay readable alongside the new ones.
+ *
+ * It DOES undo the things that would otherwise make a second run illegal or
+ * misleading:
+ *   • the approval block, because the text it approved is about to be replaced
+ *     — and an approval that outlives its content is exactly what the gate
+ *     exists to prevent
+ *   • any queued publication, which points at assets from the previous run
+ *   • the revision budget, so the new run gets a full one
+ *   • the pipeline lock, which is usually why someone is reaching for this
+ *
+ * Refused while a driver is genuinely alive, and refused once published —
+ * nothing here can unpublish a post that has already gone out.
+ */
+export async function resetRequest(
+  id: string,
+  actor: string,
+): Promise<{ request: ContentRequestRow; publicationsCanceled: number }> {
+  const current = await getRequest(id);
+  if (!current) throw new ConflictError('That request no longer exists.');
+
+  if (current.status === 'published') {
+    throw new ConflictError(
+      'This has already been published, and resetting cannot unpublish it. Create a new request instead.',
+    );
+  }
+  if (lockIsLive(current)) {
+    throw new ConflictError(
+      `The pipeline is running right now (started by ${current.pipeline_lock_by ?? 'someone'}). Wait for it to finish or stall.`,
+    );
+  }
+
+  // Queued publications first: they reference assets from the run being
+  // discarded, and the partial unique index would otherwise block the next
+  // run from queueing the same channel.
+  const canceled = await sql`
+    update publications
+    set state = 'canceled', canceled_at = now(),
+        cancel_reason = ${`Reset by ${actor}`}
+    where request_id = ${id} and state in ('queued','scheduled')
+    returning id`;
+
+  const rows = await sql`
+    update content_requests set
+      status = 'draft',
+      -- Cleared so the run starts from the audit again rather than assuming
+      -- the previous verdict still holds for an intake that may have changed.
+      readiness = null,
+      audit_json = '{}'::jsonb,
+      selected_article_id = null,
+      approved_version_id = null,
+      approved_content_hash = null,
+      approved_at = null,
+      reviewer_id = null,
+      revision_round = 0,
+      failed_stage = null,
+      failed_reason = null,
+      pipeline_lock_at = null,
+      pipeline_lock_by = null,
+      pipeline_heartbeat_at = null,
+      version = version + 1
+    where id = ${id} and status <> 'published'
+    returning *`;
+  if (!rows.length) throw new ConflictError('That request could not be reset.');
+
+  return {
+    request: ContentRequestRow.parse(rows[0]),
+    publicationsCanceled: canceled.length,
+  };
+}
