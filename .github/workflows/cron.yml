@@ -1,0 +1,74 @@
+# Vercel's Hobby plan allows one cron run per day. That is enough to keep a
+# deploy valid and not enough to run a publishing queue: a post scheduled for
+# 2pm would go out the following morning, and a pipeline whose driver died
+# would sit untouched for a day.
+#
+# So vercel.json keeps a daily run as a backstop, and this workflow does the
+# real work on a useful cadence. Both endpoints are bearer-guarded by
+# CRON_SECRET, so this is the same call Vercel Cron makes.
+#
+# SETUP — two repository secrets (Settings → Secrets and variables → Actions):
+#   APP_URL       https://your-app.vercel.app   (no trailing slash)
+#   CRON_SECRET   the same value as in your Vercel environment variables
+#
+# Until both exist this workflow runs and exits without doing anything, so it
+# is safe to merge before you have set them.
+#
+# COST — GitHub bills a minimum of one minute per job. Every 30 minutes is
+# ~1,440 minutes a month, inside the 2,000 free minutes for a private repo.
+# Public repos are unlimited. Halve the interval only if you know you have the
+# allowance for it.
+name: Publishing queue
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  # So you can prove it works without waiting for the next slot.
+  workflow_dispatch:
+
+# A slow run must never overlap the next tick. The queue tolerates it — rows
+# are claimed with FOR UPDATE SKIP LOCKED — but overlapping runs waste minutes
+# for no gain.
+concurrency:
+  group: publishing-queue
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Release due publications and resume stalled pipelines
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${APP_URL}" ] || [ -z "${CRON_SECRET}" ]; then
+            echo "APP_URL or CRON_SECRET is not set — skipping."
+            echo "Add them under Settings → Secrets and variables → Actions."
+            exit 0
+          fi
+
+          # Both endpoints in one job: GitHub's per-job minimum billing means
+          # two jobs cost twice as much as two curls for the same work.
+          failed=0
+          for path in /api/cron/publish /api/cron/resume; do
+            echo "── POST ${path}"
+            code=$(curl -sS --max-time 120 -o /tmp/body.txt -w '%{http_code}' \
+              -H "authorization: Bearer ${CRON_SECRET}" \
+              "${APP_URL}${path}") || code=000
+
+            # The body carries the counts — how many were released, how many
+            # failed — which is the thing worth having in the run log.
+            echo "   ${code}  $(head -c 300 /tmp/body.txt)"
+
+            case "${code}" in
+              200) ;;
+              401) echo "::error::CRON_SECRET does not match the one deployed."; failed=1 ;;
+              503) echo "::error::CRON_SECRET is not set on the server, so the worker refuses to run."; failed=1 ;;
+              *)   echo "::warning::${path} returned ${code}"; failed=1 ;;
+            esac
+          done
+
+          exit "${failed}"
