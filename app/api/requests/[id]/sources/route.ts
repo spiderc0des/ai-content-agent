@@ -14,7 +14,7 @@ import { errorResponse } from '@/lib/api-helpers';
 import { requiredText, optionalHttpUrl, firstIssue } from '@/lib/validation';
 import { assessSource } from '@/lib/source-quality';
 
-export const maxDuration = 800;
+export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
 
 /**

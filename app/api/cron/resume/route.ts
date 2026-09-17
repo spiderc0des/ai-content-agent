@@ -6,7 +6,7 @@ import { findStalledPipelines, claimPipelineLock, logEvent } from '@/lib/queries
 import { drivePipeline } from '@/lib/pipeline';
 
 export const runtime = 'nodejs';
-export const maxDuration = 800;
+export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
 
 /**
