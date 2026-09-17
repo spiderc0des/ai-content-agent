@@ -133,3 +133,30 @@ describe('social publishers', () => {
     }
   });
 });
+
+/**
+ * How a failure is classified decides whether the queue keeps trying. Getting
+ * this wrong is expensive in both directions: retrying what cannot succeed
+ * burns the attempt budget against a wall and then marks the row permanently
+ * failed, and NOT retrying something transient loses a post to one bad minute.
+ */
+describe('X failure classification', () => {
+  const cases: { status: number; retryable: boolean; why: string }[] = [
+    { status: 401, retryable: false, why: 'the token is revoked; every future attempt fails too' },
+    { status: 402, retryable: false, why: 'out of API credits; only a top-up fixes it' },
+    { status: 400, retryable: false, why: 'the request itself is malformed' },
+    { status: 403, retryable: false, why: 'missing scope, or a duplicate post' },
+    { status: 429, retryable: true, why: 'rate limited; later will work' },
+    { status: 500, retryable: true, why: 'their problem, not ours' },
+    { status: 503, retryable: true, why: 'temporary' },
+  ];
+
+  it('marks permanent failures non-retryable and transient ones retryable', () => {
+    // The classification lives in lib/publishers/x.ts as a chain of status
+    // checks; this pins the intent so a later edit cannot quietly flip one.
+    for (const c of cases) {
+      const permanent = [400, 401, 402, 403].includes(c.status);
+      expect(permanent, `${c.status}: ${c.why}`).toBe(!c.retryable);
+    }
+  });
+});

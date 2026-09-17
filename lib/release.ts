@@ -97,7 +97,7 @@ export async function releasePublication(
       };
     }
 
-    await markPublishFailed(publication.id, result.error);
+    await markPublishFailed(publication.id, result.error, result.retryable);
     await logEvent({
       requestId: publication.request_id,
       actor,

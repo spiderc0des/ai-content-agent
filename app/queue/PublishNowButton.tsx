@@ -31,10 +31,13 @@ export default function PublishNowButton({
       const res = await fetch(`/api/publications/${id}/publish`, { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
-      // The route answers 200 with ok:false when the release itself failed —
-      // the row records it, and the reason is worth showing here rather than
-      // making someone open the run log to find out why nothing happened.
-      if (data.ok === false) setError(String(data.error ?? 'It did not go out.'));
+      // A release failure is NOT shown here. The route answers 200 with
+      // ok:false and the row's own `last_error` already carries the reason —
+      // setting it here too printed the identical sentence twice, once under
+      // the button and once under the row.
+      //
+      // Only a request that never got an answer needs its own message, which
+      // is the catch below: that one is nowhere else.
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

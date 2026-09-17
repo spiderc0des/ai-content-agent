@@ -1331,10 +1331,24 @@ export async function markPublished(
  */
 export const MAX_PUBLISH_ATTEMPTS = 3;
 
-export async function markPublishFailed(id: string, error: string) {
+/**
+ * Record a failed release.
+ *
+ * `retryable` is the publisher's own verdict, and it is honoured rather than
+ * logged and forgotten. A revoked token, a malformed post or an account out
+ * of API credits will fail identically on every future tick — putting those
+ * back in the queue burns the attempt budget against a wall and then marks
+ * them permanently failed, which reads as "we tried" when nothing was ever
+ * going to work. They go straight to 'failed', where a person can fix the
+ * cause and publish again.
+ *
+ * Transient failures keep the old behaviour: back to 'queued' until the
+ * attempt budget is spent.
+ */
+export async function markPublishFailed(id: string, error: string, retryable = true) {
   const rows = await sql`
     update publications set
-      state = case when attempts >= ${MAX_PUBLISH_ATTEMPTS}
+      state = case when ${!retryable} or attempts >= ${MAX_PUBLISH_ATTEMPTS}
                 then 'failed' else 'queued' end::publication_state,
       locked_at = null, last_error = ${error}
     where id = ${id}
