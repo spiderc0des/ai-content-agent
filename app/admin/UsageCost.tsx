@@ -12,14 +12,26 @@ type TokenTotals = {
 /**
  * What the pipeline has cost.
  *
- * A server component: the numbers come from `stage_runs`, which already
- * records model, effort and the four token counts per attempt, so this is
- * arithmetic over rows that exist rather than a new kind of tracking.
+ * Every figure here is computed from `stage_runs` — this app's own record of
+ * every call it made, with the model and the four token counts per attempt —
+ * multiplied by the published rates in lib/pricing.ts. Nothing is fetched from
+ * Anthropic.
  *
- * Two things it deliberately does NOT claim:
+ * That is what scopes it to THIS project. An API key is usually shared across
+ * several, and the billing API reports the key's whole spend with no idea
+ * which app caused which part of it; a row in this database, by definition,
+ * came from this app. It is also what makes a per-request figure possible at
+ * all, which no invoice could give you.
+ *
+ * The trade is that this is an ESTIMATE of this project's contribution, not an
+ * invoice. It is at list price, so it does not know about volume discounts or
+ * credits, and it cannot see anything the key was used for elsewhere. The page
+ * says so rather than letting "Total" be read as the bill.
+ *
+ * Two further exclusions, both stated on the page:
  *   • Web searches are billed separately ($10 per 1,000) and this app does not
- *     record a count, so they are excluded and the page says so.
- *   • Failed calls are excluded. A stage that never got a reply cost nothing.
+ *     record a count.
+ *   • Failed calls. A stage that never got a reply cost nothing.
  */
 export default function UsageCost({
   byStage,
@@ -90,12 +102,13 @@ export default function UsageCost({
     <section className="mb-6">
       <h2 className="mb-2 font-semibold">Model usage</h2>
       <p className="mb-3 max-w-prose text-sm" style={{ color: 'var(--ink-faint)' }}>
-        Across every run. Web searches are billed separately and not counted here.
+        This app&rsquo;s own calls only, priced at list rate — not your Anthropic bill, which
+        covers everything the key is used for. Web searches are billed separately and excluded.
       </p>
 
       <div className="card mb-3">
         <dl className="grid gap-4 sm:grid-cols-4">
-          <Stat label="Total" value={formatUsd(total)} />
+          <Stat label="Estimated spend" value={formatUsd(total)} note="this app only" />
           <Stat
             label="Per request"
             value={requestCount ? formatUsd(total / requestCount) : '—'}
@@ -112,11 +125,16 @@ export default function UsageCost({
         </p>
       )}
 
-      <div className="card mb-3 overflow-x-auto">
+      {/* Collapsed by default. The four figures above answer "what has this
+          cost"; these two tables answer "where did it go", which is a question
+          you only ask sometimes — and between them they are twenty rows at the
+          top of the page. */}
+      <details className="card mb-3">
+        <summary className="cursor-pointer text-sm font-semibold">
+          By stage ({rows.length})
+        </summary>
+        <div className="mt-3 overflow-x-auto">
         <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
-          <caption className="pb-2 text-left text-xs" style={{ color: 'var(--ink-faint)' }}>
-            By stage
-          </caption>
           <thead>
             <tr style={{ color: 'var(--ink-faint)' }}>
               <Th>Stage</Th>
@@ -148,14 +166,16 @@ export default function UsageCost({
             not included.
           </p>
         )}
-      </div>
+        </div>
+      </details>
 
       {byRequest.length > 0 && (
-        <div className="card overflow-x-auto">
+        <details className="card">
+          <summary className="cursor-pointer text-sm font-semibold">
+            Most expensive requests ({byRequest.length})
+          </summary>
+          <div className="mt-3 overflow-x-auto">
           <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
-            <caption className="pb-2 text-left text-xs" style={{ color: 'var(--ink-faint)' }}>
-              Most expensive requests
-            </caption>
             <thead>
               <tr style={{ color: 'var(--ink-faint)' }}>
                 <Th>Request</Th>
@@ -186,7 +206,8 @@ export default function UsageCost({
               ))}
             </tbody>
           </table>
-        </div>
+          </div>
+        </details>
       )}
     </section>
   );

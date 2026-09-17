@@ -81,7 +81,13 @@ export default async function AdminPage({
 
   return (
     <div className="mx-auto max-w-4xl">
-      <h1 className="mb-1 text-xl font-semibold">People &amp; access</h1>
+      <h1 className="mb-6 text-xl font-semibold">Admin</h1>
+
+      <UsageCost byStage={byStage} byRequest={byRequest} requestCount={requestCount} />
+
+      <div className="my-8 border-t" style={{ borderColor: 'var(--rule)' }} />
+
+      <h2 className="mb-1 font-semibold">People &amp; access</h2>
       <p className="mb-6 max-w-prose text-sm" style={{ color: 'var(--ink-faint)' }}>
         Invited people activate on first sign-in. Everyone else stays pending.
       </p>
@@ -113,9 +119,7 @@ export default async function AdminPage({
         notice={notice}
       />
 
-      <div className="my-8 border-t" style={{ borderColor: 'var(--rule)' }} />
 
-      <UsageCost byStage={byStage} byRequest={byRequest} requestCount={requestCount} />
 
       <div className="card mt-6 text-sm" style={{ color: 'var(--ink-soft)' }}>
         <h2
