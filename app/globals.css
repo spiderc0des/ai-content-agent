@@ -1,0 +1,176 @@
+@import 'tailwindcss';
+
+/*
+ * Design tokens. Every colour in the app resolves through one of these, so a
+ * theme change is a change to this block and nowhere else.
+ */
+:root {
+  --paper: #fbfaf8;
+  --card: #ffffff;
+  --ink: #16150f;
+  --ink-soft: #5d5a50;
+  --ink-faint: #8b877a;
+  --accent: #3d5a3d;
+  --accent-soft: #eef2ee;
+  --rule: #e6e2d9;
+  --danger: #8a2f24;
+  --danger-soft: #fbeeec;
+  --warning: #8a5a17;
+  --warning-soft: #fdf4e6;
+  --success: #2b5f3f;
+  --success-soft: #eaf3ed;
+  --radius: 10px;
+  --shadow-sm: 0 1px 2px rgb(22 21 15 / 0.05);
+  --shadow: 0 2px 8px rgb(22 21 15 / 0.07);
+}
+
+[data-theme='dark'] {
+  --paper: #14140f;
+  --card: #1d1d17;
+  --ink: #f2f0e9;
+  --ink-soft: #a8a496;
+  --ink-faint: #75715f;
+  --accent: #9cc09c;
+  --accent-soft: #22291f;
+  --rule: #33322a;
+  --danger: #e59b90;
+  --danger-soft: #2e1c19;
+  --warning: #ddb06a;
+  --warning-soft: #2b2115;
+  --success: #8fc4a2;
+  --success-soft: #17251c;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow: 0 2px 8px rgb(0 0 0 / 0.35);
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── Components ─────────────────────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.9rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--rule);
+  background: var(--card);
+  color: var(--ink);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, opacity 0.12s;
+}
+.btn:hover:not(:disabled) { border-color: var(--ink-faint); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+[data-theme='dark'] .btn-primary { color: #14140f; }
+.btn-primary:hover:not(:disabled) { opacity: 0.9; }
+
+.btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+[data-theme='dark'] .btn-danger { color: #14140f; }
+
+.btn-ghost { background: transparent; border-color: transparent; color: var(--ink-soft); }
+.btn-ghost:hover:not(:disabled) { background: var(--accent-soft); border-color: transparent; }
+
+.btn-sm { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  box-shadow: var(--shadow-sm);
+}
+
+.card-link { display: block; text-decoration: none; color: inherit; transition: box-shadow 0.12s, border-color 0.12s; }
+.card-link:hover { box-shadow: var(--shadow); border-color: var(--ink-faint); }
+
+.panel { border-radius: var(--radius); padding: 0.85rem 1rem; font-size: 0.875rem; border: 1px solid; }
+.panel-info { background: var(--accent-soft); border-color: var(--rule); color: var(--ink); }
+.panel-danger { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
+.panel-warning { background: var(--warning-soft); border-color: var(--warning); color: var(--warning); }
+.panel-success { background: var(--success-soft); border-color: var(--success); color: var(--success); }
+
+.label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--ink-soft); margin-bottom: 0.3rem; }
+.hint { font-size: 0.78rem; color: var(--ink-faint); margin-top: 0.25rem; }
+
+.field {
+  width: 100%;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9rem;
+}
+.field:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+.field:disabled { background: var(--paper); color: var(--ink-faint); }
+textarea.field { min-height: 5rem; resize: vertical; }
+
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+.badge-accent { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.badge-danger { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
+.badge-warning { background: var(--warning-soft); border-color: var(--warning); color: var(--warning); }
+.badge-success { background: var(--success-soft); border-color: var(--success); color: var(--success); }
+
+.chip {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  background: var(--accent-soft);
+  color: var(--ink-soft);
+  border: 1px solid var(--rule);
+}
+
+/* ─── Rendered markdown ──────────────────────────────────────────────────── */
+
+.markdown-body {
+  line-height: 1.7;
+  font-size: 0.95rem;
+  /* A measure, not the card's full width. These are articles someone has to
+     actually read and judge before approving, and a line that runs the whole
+     width of a desktop card is genuinely harder to track back to the start
+     of. Headings and lists inherit it, so the column stays coherent. */
+  max-width: 68ch;
+}
+.markdown-body h1 { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.75rem; line-height: 1.25; }
+.markdown-body h2 { font-size: 1.15rem; font-weight: 650; margin: 1.75rem 0 0.5rem; }
+.markdown-body h3 { font-size: 1rem; font-weight: 650; margin: 1.25rem 0 0.4rem; color: var(--ink-soft); }
+.markdown-body p { margin: 0 0 0.85rem; }
+.markdown-body ul { margin: 0 0 0.85rem; padding-left: 1.25rem; list-style: disc; }
+.markdown-body li { margin-bottom: 0.3rem; }
+.markdown-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.markdown-body strong { font-weight: 650; }
+.markdown-body blockquote {
+  margin: 0 0 0.85rem;
+  padding-left: 0.9rem;
+  border-left: 3px solid var(--rule);
+  color: var(--ink-soft);
+}
+
+/* The channel assets are plain text, and their line breaks are meaningful. */
+.preformatted {
+  white-space: pre-wrap;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  max-width: 68ch;
+}
