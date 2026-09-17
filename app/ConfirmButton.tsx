@@ -62,6 +62,16 @@ export default function ConfirmButton({
   // A floating panel that cannot be dismissed with Escape is a trap — the
   // trigger is behind it, and on a list row there is nowhere obvious to
   // click. Only for the popover: the inline panel keeps its Cancel in view.
+  /**
+   * Close the confirmation if the action stops being available while it is
+   * open — unticking the last channel, say. Otherwise the panel sits there
+   * asking a question about a selection that no longer exists, and its
+   * wording degrades into nonsense like "Schedule Nothing selected for…".
+   */
+  useEffect(() => {
+    if (confirming && disabled) setConfirming(false);
+  }, [confirming, disabled]);
+
   useEffect(() => {
     if (!confirming || layout !== 'popover') return;
     function onKey(e: KeyboardEvent) {

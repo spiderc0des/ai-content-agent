@@ -35,7 +35,10 @@ export function composeXPost(body: string, tagHandles: string[]): Composed {
   if (!tags.length) {
     return base.length <= X_MAX_CHARS
       ? { ok: true, text: base }
-      : { ok: false, error: `the post is ${base.length} characters, ${base.length - X_MAX_CHARS} over X's limit` };
+      : {
+          ok: false,
+          error: `the post is ${base.length} characters, ${base.length - X_MAX_CHARS} over X's limit of ${X_MAX_CHARS}`,
+        };
   }
 
   // A handle already written into the copy is not repeated underneath it.
@@ -44,12 +47,17 @@ export function composeXPost(body: string, tagHandles: string[]): Composed {
 
   if (text.length > X_MAX_CHARS) {
     const over = text.length - X_MAX_CHARS;
+    const added = text.length - base.length;
+    // Shows its own arithmetic. "288 characters" alone invites the question
+    // "288 of what?" — the post passed its own 280 check before the tags
+    // existed, so the number only makes sense broken into its two parts.
     return {
       ok: false,
       error:
-        `the post plus ${missing.length} tagged account${missing.length === 1 ? '' : 's'} is ` +
-        `${text.length} characters, ${over} over X's limit of ${X_MAX_CHARS} — ` +
-        'shorten the post or tag fewer accounts',
+        `the post is ${base.length} characters and tagging ${missing.length} ` +
+        `account${missing.length === 1 ? '' : 's'} adds ${added} more — ` +
+        `${text.length} in total, ${over} over X's limit of ${X_MAX_CHARS}. ` +
+        'Shorten the post or tag fewer accounts.',
     };
   }
   return { ok: true, text };

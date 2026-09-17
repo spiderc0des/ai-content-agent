@@ -4,6 +4,7 @@ import { requireUser, AuthError } from '@/lib/auth';
 import { listQueue } from '@/lib/queries';
 import NotAuthorized from '../NotAuthorized';
 import CancelPublicationButton from './CancelPublicationButton';
+import PublishNowButton from './PublishNowButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +24,7 @@ export default async function QueuePage() {
     <div>
       <h1 className="mb-1 text-xl font-semibold">Publishing queue</h1>
       <p className="mb-6 text-sm" style={{ color: 'var(--ink-soft)' }}>
-        Waiting to be released by the publishing worker.
+        Waiting to be released. The worker runs on a schedule; Publish now sends immediately.
       </p>
 
       {queue.length === 0 ? (
@@ -63,20 +64,30 @@ export default async function QueuePage() {
                     tagging {p.tag_handles.join(' ')}
                   </span>
                 )}
+                {/* "next tick" meant nothing to anyone who had not read the
+                    worker. What a person wants to know is whether it is
+                    waiting for a time or waiting for the worker. */}
                 <span className="ml-auto text-sm" style={{ color: 'var(--ink-faint)' }}>
                   {p.scheduled_for
-                    ? `scheduled ${p.scheduled_for.toLocaleString()}`
-                    : 'next tick'}
+                    ? `scheduled for ${p.scheduled_for.toLocaleString()}`
+                    : 'waiting for the next worker run'}
                 </span>
-                {/* 'publishing' is deliberately excluded: the worker already
-                    holds that row and is mid-release, so cancelling it would
-                    be a promise the queue cannot keep. */}
+                {/* 'publishing' is deliberately excluded from both: the worker
+                    already holds that row and is mid-release, so cancelling or
+                    re-sending it would be a promise the queue cannot keep. */}
                 {p.state !== 'publishing' && (
-                  <CancelPublicationButton
-                    id={p.id}
-                    channel={p.channel === 'x' ? 'X' : p.channel}
-                    scheduledFor={p.scheduled_for?.toISOString() ?? null}
-                  />
+                  <>
+                    <PublishNowButton
+                      id={p.id}
+                      channel={p.channel === 'x' ? 'X' : p.channel}
+                      recipients={p.email_group_name ? p.email_group_size : null}
+                    />
+                    <CancelPublicationButton
+                      id={p.id}
+                      channel={p.channel === 'x' ? 'X' : p.channel}
+                      scheduledFor={p.scheduled_for?.toISOString() ?? null}
+                    />
+                  </>
                 )}
               </div>
               {p.last_error && (

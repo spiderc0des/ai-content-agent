@@ -1928,3 +1928,29 @@ export async function resetRequest(
   });
 }
 
+
+/**
+ * Claim ONE publication for immediate release.
+ *
+ * The same conditional-UPDATE claim the cron worker uses, narrowed to a single
+ * row: `state in ('queued','scheduled')` is the guard, so a row the worker has
+ * already taken returns nothing here and the button reports "already going
+ * out" rather than sending it a second time.
+ *
+ * Note it ignores `scheduled_for`. That is the point of Publish now — the
+ * schedule is what you are overriding.
+ */
+export async function claimPublicationNow(id: string): Promise<PublicationRow | null> {
+  const rows = await sql`
+    update publications set
+      state = 'publishing', locked_at = now(), attempts = attempts + 1
+    where id = ${id} and state in ('queued','scheduled')
+    returning *`;
+  return rows.length ? PublicationRow.parse(rows[0]) : null;
+}
+
+/** One publication with the request it belongs to, for permission checks. */
+export async function getPublication(id: string) {
+  const rows = await sql`select * from publications where id = ${id}`;
+  return rows.length ? PublicationRow.parse(rows[0]) : null;
+}
