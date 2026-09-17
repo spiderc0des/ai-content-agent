@@ -15,6 +15,9 @@ export const dynamic = 'force-dynamic';
  * Deliberately does not start the pipeline afterwards. Reset is often reached
  * for because something went wrong, and the useful next step is sometimes to
  * edit the intake rather than immediately spend another run's worth of calls.
+ *
+ * This DELETES the previous run — see resetRequest. The event it writes is
+ * what is left of it.
  */
 export async function POST(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -38,10 +41,10 @@ export async function POST(_r: NextRequest, { params }: { params: Promise<{ id: 
       {
         successDetail: (r) => ({
           from_status: row.status,
-          // The two things a reset silently undoes. Worth recording, because
-          // "why is this not approved any more" is otherwise unanswerable.
           approval_revoked: Boolean(row.approved_version_id),
-          publications_canceled: r.publicationsCanceled,
+          // What was removed, by table. `events` survives the reset, so this
+          // is the only remaining answer to "where did the previous run go".
+          deleted: r.deleted,
         }),
       },
     );
@@ -50,7 +53,7 @@ export async function POST(_r: NextRequest, { params }: { params: Promise<{ id: 
       ok: true,
       status: result.request.status,
       version: result.request.version,
-      publicationsCanceled: result.publicationsCanceled,
+      deleted: result.deleted,
     });
   } catch (err) {
     return errorResponse(err);

@@ -1789,30 +1789,36 @@ export async function countRequestsWithUsage(): Promise<number> {
 }
 
 /**
- * Put a request back to the start so the pipeline can run again.
+ * Wipe a request back to a freshly audited draft.
  *
- * What it does NOT do is delete anything. `article_versions`, `reviews`,
- * `evaluations` and `events` reject DELETE by trigger, and that is the point:
- * a reset is "run this again", not "pretend this never happened". Re-running
- * writes new revisions onto the same option slots, so the drafts that already
- * exist stay readable alongside the new ones.
+ * Everything the pipeline produced is DELETED — sources and their excerpts,
+ * the plan, every article option and every draft of it, claims, citations,
+ * evaluations, channel assets, publications, reviews, and the stage runs that
+ * made them. What survives is the intake the person typed and the audit
+ * verdict on it, so the request is exactly what it was the moment before
+ * research first ran.
  *
- * It DOES undo the things that would otherwise make a second run illegal or
- * misleading:
- *   • the approval block, because the text it approved is about to be replaced
- *     — and an approval that outlives its content is exactly what the gate
- *     exists to prevent
- *   • any queued publication, which points at assets from the previous run
- *   • the revision budget, so the new run gets a full one
- *   • the pipeline lock, which is usually why someone is reaching for this
+ * This deliberately breaks the append-only guarantee, which is worth being
+ * plain about. `article_versions`, `reviews` and `evaluations` reject DELETE
+ * by trigger so that "which text was approved, and by whom" outlives anyone
+ * tidying up; sql/09-reset.sql opens a hole for this one operation, scoped to
+ * a single transaction. The trade is deliberate: a reset request should look
+ * new, not look new while carrying the last run's drafts underneath.
  *
- * Refused while a driver is genuinely alive, and refused once published —
- * nothing here can unpublish a post that has already gone out.
+ * Two things still survive it, on purpose:
+ *   • `events` — the narrative log, including the reset itself and a count of
+ *     what it removed. It is the only remaining answer to "where did the
+ *     previous run go", and it holds no generated content.
+ *   • Anything already published. Refused outright, because nothing here can
+ *     unpublish a post that has gone out.
+ *
+ * One transaction, so a failure part-way leaves the request as it was rather
+ * than half-erased.
  */
 export async function resetRequest(
   id: string,
   actor: string,
-): Promise<{ request: ContentRequestRow; publicationsCanceled: number }> {
+): Promise<{ request: ContentRequestRow; deleted: Record<string, number> }> {
   const current = await getRequest(id);
   if (!current) throw new ConflictError('That request no longer exists.');
 
@@ -1827,41 +1833,98 @@ export async function resetRequest(
     );
   }
 
-  // Queued publications first: they reference assets from the run being
-  // discarded, and the partial unique index would otherwise block the next
-  // run from queueing the same channel.
-  const canceled = await sql`
-    update publications
-    set state = 'canceled', canceled_at = now(),
-        cancel_reason = ${`Reset by ${actor}`}
-    where request_id = ${id} and state in ('queued','scheduled')
-    returning id`;
+  return sql.begin(async (tx) => {
+    // Transaction-local: this dies with the transaction and cannot leak onto
+    // the next query to borrow this pooled connection.
+    await tx`select set_config('app.resetting', 'on', true)`;
 
-  const rows = await sql`
-    update content_requests set
-      status = 'draft',
-      -- Cleared so the run starts from the audit again rather than assuming
-      -- the previous verdict still holds for an intake that may have changed.
-      readiness = null,
-      audit_json = '{}'::jsonb,
-      selected_article_id = null,
-      approved_version_id = null,
-      approved_content_hash = null,
-      approved_at = null,
-      reviewer_id = null,
-      revision_round = 0,
-      failed_stage = null,
-      failed_reason = null,
-      pipeline_lock_at = null,
-      pipeline_lock_by = null,
-      pipeline_heartbeat_at = null,
-      version = version + 1
-    where id = ${id} and status <> 'published'
-    returning *`;
-  if (!rows.length) throw new ConflictError('That request could not be reset.');
+    // The request points AT content that is about to go. Null the references
+    // first, or the deletes below hit a foreign key that is still in use.
+    await tx`
+      update content_requests set
+        selected_article_id = null, approved_version_id = null,
+        approved_content_hash = null, approved_at = null, reviewer_id = null
+      where id = ${id}`;
 
-  return {
-    request: ContentRequestRow.parse(rows[0]),
-    publicationsCanceled: canceled.length,
-  };
+    // Deleted leaf-first. Several of these would cascade anyway, but doing it
+    // explicitly means the counts below are real rather than whatever the
+    // database happened to take with it.
+    const counts: Record<string, number> = {};
+    const wipe = async (label: string, run: Promise<readonly unknown[]>) => {
+      counts[label] = (await run).length;
+    };
+
+    await wipe('publications', tx`delete from publications where request_id = ${id} returning id`);
+    await wipe('channel_assets', tx`delete from channel_assets where request_id = ${id} returning id`);
+    await wipe(
+      'claim_citations',
+      tx`delete from claim_citations c using article_claims ac, article_versions av, articles a
+         where c.claim_id = ac.id and ac.version_id = av.id and av.article_id = a.id
+           and a.request_id = ${id} returning c.claim_id`,
+    );
+    await wipe(
+      'article_claims',
+      tx`delete from article_claims ac using article_versions av, articles a
+         where ac.version_id = av.id and av.article_id = a.id and a.request_id = ${id}
+         returning ac.id`,
+    );
+    await wipe(
+      'article_version_sources',
+      tx`delete from article_version_sources vs using article_versions av, articles a
+         where vs.version_id = av.id and av.article_id = a.id and a.request_id = ${id}
+         returning vs.version_id`,
+    );
+    await wipe(
+      'evaluation_scores',
+      tx`delete from evaluation_scores es using evaluations e, article_versions av, articles a
+         where es.evaluation_id = e.id and e.version_id = av.id and av.article_id = a.id
+           and a.request_id = ${id} returning es.evaluation_id`,
+    );
+    await wipe(
+      'evaluations',
+      tx`delete from evaluations e using article_versions av, articles a
+         where e.version_id = av.id and av.article_id = a.id and a.request_id = ${id}
+         returning e.id`,
+    );
+    await wipe('reviews', tx`delete from reviews where request_id = ${id} returning id`);
+
+    // An article points at its own current version, so that has to let go
+    // before the versions can be removed.
+    await tx`update articles set current_version_id = null where request_id = ${id}`;
+    await wipe(
+      'article_versions',
+      tx`delete from article_versions av using articles a
+         where av.article_id = a.id and a.request_id = ${id} returning av.id`,
+    );
+    await wipe('articles', tx`delete from articles where request_id = ${id} returning id`);
+    await wipe('content_plans', tx`delete from content_plans where request_id = ${id} returning id`);
+    await wipe(
+      'source_excerpts',
+      tx`delete from source_excerpts e using sources s
+         where e.source_id = s.id and s.request_id = ${id} returning e.id`,
+    );
+    await wipe('sources', tx`delete from sources where request_id = ${id} returning id`);
+    // Last: everything above referenced these.
+    await wipe('stage_runs', tx`delete from stage_runs where request_id = ${id} returning id`);
+
+    const rows = await tx`
+      update content_requests set
+        status = 'draft',
+        revision_round = 0,
+        failed_stage = null,
+        failed_reason = null,
+        pipeline_lock_at = null,
+        pipeline_lock_by = null,
+        pipeline_heartbeat_at = null,
+        version = version + 1
+      where id = ${id} and status <> 'published'
+      returning *`;
+    if (!rows.length) throw new ConflictError('That request could not be reset.');
+
+    return {
+      request: ContentRequestRow.parse(rows[0]),
+      deleted: Object.fromEntries(Object.entries(counts).filter(([, n]) => n > 0)),
+    };
+  });
 }
+

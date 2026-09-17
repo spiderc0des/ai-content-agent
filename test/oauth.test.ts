@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 
 /**
  * The authorize URLs, checked against each provider's published contract.
@@ -13,13 +13,35 @@ import { describe, it, expect, beforeAll } from 'vitest';
  */
 let providers: typeof import('../lib/oauth/providers');
 
+/**
+ * process.env is shared across test files in a vitest worker, and workers are
+ * reused. Injecting credentials here without putting them back made
+ * publishers.test.ts see a CONFIGURED X app and fail its fallback assertion —
+ * a failure in a file that does nothing wrong, caused by whichever file ran
+ * before it. Restored in afterAll so the pollution cannot travel.
+ */
+const INJECTED = {
+  X_CLIENT_ID: 'test-x-client',
+  X_CLIENT_SECRET: 'test-x-secret',
+  LINKEDIN_CLIENT_ID: 'test-li-client',
+  LINKEDIN_CLIENT_SECRET: 'test-li-secret',
+  APP_URL: 'https://koya.example.com',
+} as const;
+const original: Record<string, string | undefined> = {};
+
 beforeAll(async () => {
-  process.env.X_CLIENT_ID = 'test-x-client';
-  process.env.X_CLIENT_SECRET = 'test-x-secret';
-  process.env.LINKEDIN_CLIENT_ID = 'test-li-client';
-  process.env.LINKEDIN_CLIENT_SECRET = 'test-li-secret';
-  process.env.APP_URL = 'https://koya.example.com';
+  for (const [k, v] of Object.entries(INJECTED)) {
+    original[k] = process.env[k];
+    process.env[k] = v;
+  }
   providers = await import('../lib/oauth/providers');
+});
+
+afterAll(() => {
+  for (const k of Object.keys(INJECTED)) {
+    if (original[k] === undefined) delete process.env[k];
+    else process.env[k] = original[k];
+  }
 });
 
 describe('PKCE', () => {

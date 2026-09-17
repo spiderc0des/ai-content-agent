@@ -42,11 +42,14 @@ const CHANNELS = [
 export default function ChannelConnections({
   connections,
   configured,
+  callbackBase,
   notice,
 }: {
   connections: ConnectionRow[];
   /** Which channels have client credentials in the environment. */
   configured: Record<string, boolean>;
+  /** APP_URL, so the page can show the exact callback URL to register. */
+  callbackBase: string;
   /** A message the OAuth callback redirected back with. */
   notice: { kind: 'ok' | 'error'; text: string } | null;
 }) {
@@ -143,11 +146,22 @@ export default function ChannelConnections({
                       )}
                     </>
                   ) : (
-                    <p className="mt-1 max-w-prose text-sm" style={{ color: 'var(--ink-soft)' }}>
-                      {isConfigured
-                        ? c.blurb
-                        : `${c.blurb} Add its client id and secret first.`}
-                    </p>
+                    <>
+                      <p className="mt-1 max-w-prose text-sm" style={{ color: 'var(--ink-soft)' }}>
+                        {isConfigured ? c.blurb : `${c.blurb} Add its client id and secret first.`}
+                      </p>
+                      {/* The single most common reason the provider refuses
+                          before it ever shows a consent screen: the callback
+                          registered on their side does not match this, exactly
+                          — scheme, host, port and path. Shown so it can be
+                          copied rather than retyped. */}
+                      <p className="mt-2 text-xs" style={{ color: 'var(--ink-faint)' }}>
+                        Register this callback URL on the {c.label} app, exactly:
+                      </p>
+                      <code className="mt-1 block break-all text-xs">
+                        {callbackBase}/api/admin/channels/{c.key}/callback
+                      </code>
+                    </>
                   )}
                 </div>
 
