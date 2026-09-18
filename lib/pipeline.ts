@@ -1563,7 +1563,23 @@ export const STAGE_RESERVE_MS: Record<string, number> = {
  * not even the six-second audit that always precedes it.
  */
 export const RESEARCH_RESERVE_MS: Record<string, number> = {
-  quick: 150_000,
+  // 280s, not the 150s this was first set to, because quick research is not
+  // reliably quick and nothing we control decides that.
+  //
+  // Measured over quick runs with identical work — 6 sources, 4 readable,
+  // ~1,000 input tokens, ~4,000 output — the wall clock ranged from 46s to
+  // 276s. A six-fold spread with the same inputs and the same outputs,
+  // because web_search and web_fetch make real HTTP requests to real
+  // websites: up to twelve external round trips inside one call, each of
+  // which may be slow, redirect, or serve an enormous page.
+  //
+  // So the reserve has to cover the slow draw, not the typical one. At 150s
+  // the driver would start research with room for the 46-second case and get
+  // killed on the 276-second one — losing the stage, its cost, and the lock.
+  // The cost of being wrong in that direction is a lost stage; the cost of
+  // reserving too much is that research shares a slice with only the audit,
+  // which it mostly did anyway.
+  quick: 280_000,
   standard: 280_000,
   deep: 300_000,
 };

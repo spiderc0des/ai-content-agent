@@ -659,17 +659,28 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
                     color:
                       st.status === 'ok'
                         ? 'var(--success)'
-                        : st.status === 'failed'
+                        : st.status === 'failed' || (st.status === 'running' && !running)
                           ? 'var(--danger)'
                           : 'var(--ink-faint)',
                   }}
                 >
-                  {st.status === 'ok' ? '✓' : st.status === 'failed' ? '✗' : '•'}
+                  {st.status === 'ok'
+                    ? '✓'
+                    : st.status === 'failed' || (st.status === 'running' && !running)
+                      ? '✗'
+                      : '•'}
                 </span>{' '}
                 {st.stage}
                 {st.attempt > 1 && ` (try ${st.attempt})`}
                 {st.seconds !== null && ` — ${st.seconds}s`}
-                {st.status === 'running' && ' — running…'}
+                {st.status === 'running' &&
+                  // A stage row says `running` until something finishes it,
+                  // and a driver killed mid-stage never gets to. Without the
+                  // lock check the page reports work that stopped minutes ago
+                  // as still in progress — which is the failure this whole
+                  // project keeps meeting: not an error, just a screen that
+                  // quietly says everything is fine.
+                  (running ? ' — running…' : ' — stopped, no driver')}
               </li>
             ))}
           </ul>
@@ -857,7 +868,18 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
         <section className="card">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <h2 className="font-semibold">Channel assets</h2>
-            {capabilities.canRun && (
+            {/* Packaging is not something the reviewer has to ask for.
+                Approving drives the pipeline on, and nextStage() sends an
+                approved request straight to packaging — so while that is in
+                flight, offering a "Prepare channels" button told someone to
+                start work that had already started, and pressing it did
+                nothing but contend for the lock.
+
+                The button survives for the two cases where a person genuinely
+                has to act: regenerating a channel whose asset broke its rules,
+                and starting packaging by hand when the run that should have
+                done it died. */}
+            {capabilities.canRun && (data.assets.length > 0 || !running) && (
               <button className="btn btn-sm" onClick={packageChannels} disabled={Boolean(busy)}>
                 {busy === 'package' ? 'Preparing…' : data.assets.length ? 'Regenerate' : 'Prepare channels'}
               </button>
@@ -866,7 +888,9 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
 
           {data.assets.length === 0 ? (
             <p className="text-sm" style={{ color: 'var(--ink-soft)' }}>
-              Approved. Prepare the channel versions next.
+              {running
+                ? 'Approved. Preparing the channel versions…'
+                : 'Approved, but the channel versions were never produced — the run that should have done it stopped. Prepare them to carry on.'}
             </p>
           ) : (
             <div className="space-y-4">
