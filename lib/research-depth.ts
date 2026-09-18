@@ -5,12 +5,24 @@
  * numbers live in one place instead of as five constants scattered across
  * three files.
  *
- * Research is the most expensive stage in the pipeline by a wide margin: in
- * real runs it has been over half the total spend, because web search results
- * arrive as input tokens and there are a great many of them. It also drives a
- * SECOND cost that is easy to miss — retrieval makes one Claude call per
- * readable source, so a setting that finds twice as many sources costs twice
- * as much twice over.
+ * Research is the most expensive stage in the pipeline by a wide margin, and
+ * it is also by far the slowest. Those two facts have different causes, which
+ * is why this file carries two groups of knobs:
+ *
+ *   COST is driven by how much is read. Web search results and fetched pages
+ *   arrive as input tokens and there are a great many of them, and retrieval
+ *   then makes one Claude call per readable source — so a setting that finds
+ *   twice as many sources costs twice as much twice over.
+ *
+ *   WALL-CLOCK is driven by how much is WRITTEN. Measured over real runs, the
+ *   research call returned 8,000–21,000 output tokens against 600–2,000 input
+ *   tokens, and took 149–533 seconds. Generation is serial and roughly linear
+ *   in output length; the tool budget barely touches it. A 'quick' run that
+ *   searched four times instead of eight but still wrote a 20,000-token brief
+ *   was not quick, which is exactly the complaint this file now answers.
+ *
+ * So the source knobs make a depth CHEAPER and the brief knobs make it
+ * FASTER, and a profile has to move both or it only half works.
  *
  * Hence three profiles rather than one dial: the knobs only make sense moved
  * together.
@@ -31,9 +43,52 @@ export interface DepthProfile {
   maxRounds: number;
   /** Sources kept — and therefore retrieval calls made. */
   maxSources: number;
+  /**
+   * Roughly how long the research brief should be, in words.
+   *
+   * The single biggest lever on how long this stage takes. Left unsaid, the
+   * model writes an exhaustive brief every time — the prompt asks for facts,
+   * figures and quotations attributed to every URL, and it obliges at length.
+   */
+  briefWords: number;
+  /**
+   * Ceiling on the research call's output, including thinking.
+   *
+   * A backstop, not the control — briefWords is the control. Kept well above
+   * what briefWords implies, because hitting this is a stage FAILURE (see
+   * withRetry's max_tokens branch), not a graceful truncation.
+   */
+  maxOutputTokens: number;
+  /**
+   * Page text admitted to context per fetch, in tokens.
+   *
+   * Caps the input a single long page can contribute. Cuts cost directly, and
+   * time indirectly: less material read is less material written about.
+   */
+  maxContentTokens: number;
+  /**
+   * Resumes allowed after the server's own tool loop pauses.
+   *
+   * Each resume re-sends the whole conversation — every search result and
+   * every fetched page so far — so late resumes are the most expensive turns
+   * in the call. Quick gets one; there is no point finding more if there is
+   * no room left in the brief to say anything about it.
+   */
+  maxContinuations: number;
   /** For the form. */
   label: string;
   hint: string;
+  /**
+   * Roughly how long the research stage takes, for the form to set an
+   * expectation before someone waits on it.
+   *
+   * A RANGE, deliberately wide, and about the research stage only — not the
+   * whole pipeline. Anchored to measured runs (standard research took 149s to
+   * 533s across real requests before briefWords existed) and scaled by the
+   * brief bound, which is what actually moves it. Not a promise: a topic whose
+   * sources all block the fetcher takes longer at every depth.
+   */
+  pace: string;
 }
 
 const PROFILES: Record<ResearchDepth, DepthProfile> = {
@@ -45,8 +100,13 @@ const PROFILES: Record<ResearchDepth, DepthProfile> = {
     // most expensive thing this pipeline can decide to do.
     maxRounds: 1,
     maxSources: 6,
+    briefWords: 400,
+    maxOutputTokens: 8000,
+    maxContentTokens: 4000,
+    maxContinuations: 1,
     label: 'Quick',
-    hint: 'One search pass, up to 6 sources. Cheapest and fastest; a narrower evidence base.',
+    pace: 'about 2–4 minutes',
+    hint: 'One search pass, up to 6 sources, a short brief. Fastest and cheapest; a narrower evidence base.',
   },
   standard: {
     maxSearches: 8,
@@ -54,7 +114,12 @@ const PROFILES: Record<ResearchDepth, DepthProfile> = {
     minReadable: 7,
     maxRounds: 3,
     maxSources: 12,
+    briefWords: 900,
+    maxOutputTokens: 16000,
+    maxContentTokens: 8000,
+    maxContinuations: 3,
     label: 'Standard',
+    pace: 'about 4–8 minutes',
     hint: 'Searches again if too few sources can be read. Up to 12 sources.',
   },
   deep: {
@@ -63,8 +128,13 @@ const PROFILES: Record<ResearchDepth, DepthProfile> = {
     minReadable: 10,
     maxRounds: 3,
     maxSources: 18,
+    briefWords: 1600,
+    maxOutputTokens: 24000,
+    maxContentTokens: 12000,
+    maxContinuations: 4,
     label: 'Deep',
-    hint: 'Casts wider and keeps up to 18 sources. Noticeably slower and dearer.',
+    pace: 'about 8–15 minutes',
+    hint: 'Casts wider, keeps up to 18 sources, writes a fuller brief. Noticeably slower and dearer.',
   },
 };
 

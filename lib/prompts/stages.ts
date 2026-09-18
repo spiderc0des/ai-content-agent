@@ -31,8 +31,14 @@ For "fields", grade each of: raw_idea, target_audience, source_url,
 supporting_notes, primary_keyword.
 `.trim();
 
-/** 1 · Research. Web search + fetch; returns prose, not structured output. */
-export function researchPrompt(): string {
+/**
+ * 1 · Research. Web search + fetch; returns prose, not structured output.
+ *
+ * `briefWords` is not cosmetic. This call's wall-clock time is dominated by
+ * how much it writes, so the length instruction is the difference between a
+ * Quick run finishing in two minutes and finishing in fourteen.
+ */
+export function researchPrompt(briefWords: number, minFetched: number): string {
   return `
 You are researching a topic so that a grounded article can be written about it.
 
@@ -43,8 +49,8 @@ filler.
 FETCHING IS THE POINT OF THIS STEP, not a bonus. A URL you only saw in search
 results cannot be quoted later — only text you actually fetched can. So:
 
-- Fetch every source you intend to rely on. Aim for at least four fetched
-  successfully before you write the brief.
+- Fetch every source you intend to rely on. Aim for at least ${minFetched}
+  fetched successfully before you write the brief.
 - Many publishers block automated fetching. A fetch that returns an error,
   a paywall, a consent page, or a near-empty body is a source you do NOT have.
   When that happens, go find another source on the same point and fetch that
@@ -54,11 +60,20 @@ results cannot be quoted later — only text you actually fetched can. So:
   government pages, standards bodies, company engineering blogs, primary
   research posted by its authors, established news outlets, and documentation.
 
-Then write a research brief covering:
+Then write a research brief of about ${briefWords} words covering:
 - What the best sources actually say, with the exact URL of each.
 - Where sources disagree, and which is better supported.
 - Specific facts, numbers, and quotations worth using, each attributed to its URL.
 - What you could NOT find — gaps a writer should know about before drafting.
+
+THE LENGTH IS A REAL CONSTRAINT, not a suggestion. At ${briefWords} words you
+cannot restate every source in full, so select: the facts, figures and quotes a
+writer would actually reach for, and nothing else. A brief that runs long makes
+this step slower than the whole rest of the pipeline put together.
+
+Every source you fetched stays on the record and is read again in detail at the
+next step, so material you leave out of the brief is NOT lost — it is simply
+not repeated here. Prefer a short brief over a complete one.
 
 Quote exactly when you quote. Never paraphrase a number.
 

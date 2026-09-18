@@ -10,3 +10,13 @@
  */
 export const VERIFIED_USER_ID_HEADER = 'x-koya-verified-user-id';
 export const VERIFIED_USER_EMAIL_HEADER = 'x-koya-verified-user-email';
+
+/**
+ * The path being served, forwarded so a Server Component can branch on it.
+ *
+ * Next gives a layout no way to read the current URL, and the public reader
+ * page needs the root layout to leave out the app header — Review, Queue and
+ * Admin links mean nothing to someone arriving from a newsletter, and reading
+ * as an invitation to go poking is worse than meaningless.
+ */
+export const PATHNAME_HEADER = 'x-koya-pathname';

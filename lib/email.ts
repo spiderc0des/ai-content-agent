@@ -165,6 +165,8 @@ export async function sendNewsletter(params: {
   recipients: { email: string; name: string }[];
   /** The list's name, so the footer can say what they subscribed to. */
   groupName: string;
+  /** The public article page, for readers whose client mangles the HTML. */
+  readUrl?: string | null;
 }): Promise<NewsletterSendResult> {
   if (!emailEnabled) {
     return {
@@ -187,15 +189,16 @@ export async function sendNewsletter(params: {
     };
   }
 
-  // No "read it online" link. There is no reader-facing page in this system
-  // and the brief does not ask for one — the newsletter IS the delivery, and
-  // the whole of it is in this mail. A link into the app would send a
-  // subscriber to a sign-in wall, and past it to the request workspace with
-  // every draft, evaluation and source decision on display.
+  // There IS a reader page now, and it is public and article-only — so the
+  // link is safe in a way an app URL would not be. It goes at the end, after
+  // the newsletter has already delivered its content: a mail that depends on
+  // a click has wasted the send.
   const html = emailShell({
     title: params.subject,
     preheader: params.preheader,
-    body: markdownToEmailHtml(params.bodyMd),
+    body:
+      markdownToEmailHtml(params.bodyMd) +
+      (params.readUrl ? button({ label: 'Read the full article', href: params.readUrl }) : ''),
     footnote:
       `You are receiving this because you are on the “${escapeHtml(params.groupName)}” list. ` +
       'Reply to this email to unsubscribe.',
@@ -203,6 +206,7 @@ export async function sendNewsletter(params: {
 
   const text =
     `${markdownToPlainText(params.bodyMd)}\n\n` +
+    (params.readUrl ? `Read the full article: ${params.readUrl}\n\n` : '') +
     `—\nYou are receiving this because you are on the "${params.groupName}" list. ` +
     `Reply to this email to unsubscribe.`;
 

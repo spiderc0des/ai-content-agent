@@ -117,8 +117,14 @@ export async function POST(
           // the first moment the real number is knowable — and the last moment
           // anyone is looking. Left to the worker, a post two characters over
           // fails at 3am, having been queued hours earlier with no sign of it.
-          if (channel === 'x' && tagHandles.length) {
-            const composed = composeXPost(asset.body, tagHandles);
+          if (channel === 'x') {
+            // The read link counts too — 23 characters, because X rewrites
+            // every URL to t.co. Checking without it would pass here and fail
+            // at release, which is the gap this check exists to close. The
+            // token may not be minted yet, so a same-length placeholder
+            // stands in for it.
+            const readUrlPlaceholder = `${'x'.repeat(30)}`;
+            const composed = composeXPost(asset.body, tagHandles, readUrlPlaceholder);
             if (!composed.ok) throw new Error(composed.error);
           }
 

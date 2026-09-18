@@ -48,7 +48,7 @@ export function linkedinPublisher(): Publisher {
         };
       }
 
-      const composed = composeLinkedInPost(asset.body, target.tagHandles);
+      const composed = composeLinkedInPost(asset.body, target.tagHandles, target.readUrl);
       if (!composed.ok) {
         return { ok: false, provider: 'linkedin_api', retryable: false, error: composed.error };
       }

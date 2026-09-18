@@ -18,6 +18,20 @@
  * 25,000. Overridable for that reason, because silently capping a Premium
  * account at 280 is a limit the platform is not imposing.
  */
+/**
+ * The label the read link is introduced with.
+ *
+ * Neither X nor LinkedIn renders anchor text in a post body — both are plain
+ * text and auto-link a bare URL — so a link cannot be hidden behind words the
+ * way it can in the newsletter. A label in front of it is the closest thing,
+ * and it is what tells a reader the URL is the article itself rather than a
+ * source it cites.
+ *
+ * Not free on X: the words cost their own characters on top of the 23 the URL
+ * costs, which is why it is short.
+ */
+export const READ_LABEL = 'Read the full article:';
+
 export const X_MAX_CHARS = Number(process.env.X_POST_MAX_CHARS ?? 280);
 
 /**
@@ -66,8 +80,22 @@ export type Composed = { ok: true; text: string } | { ok: false; error: string }
  * rather than truncating. The asset passed its rule check at 280 before the
  * tags existed, so this is the only place the real number is known.
  */
-export function composeXPost(body: string, tagHandles: string[]): Composed {
-  const base = body.trim();
+export function composeXPost(
+  body: string,
+  tagHandles: string[],
+  /** The public article link, if this request has one. */
+  readUrl?: string | null,
+): Composed {
+  // The link goes in first because it is the part that cannot be dropped: a
+  // post is worth less without somewhere to read the thing. It costs 23
+  // characters whatever its length — X rewrites every URL to t.co — so it is
+  // cheap, but it is not free, and the budget has to know about it before the
+  // tags are added.
+  const withLink =
+    readUrl && !body.includes(readUrl)
+      ? `${body.trim()}\n\n${READ_LABEL} ${readUrl}`
+      : body;
+  const base = withLink.trim();
   const tags = dedupe(tagHandles);
 
   if (!tags.length) {
@@ -120,12 +148,19 @@ export function composeXPost(body: string, tagHandles: string[]): Composed {
  * There is no character limit here worth enforcing: LinkedIn's commentary
  * limit is 3000, and the channel rules already hold these posts far below it.
  */
-export function composeLinkedInPost(body: string, tagHandles: string[]): Composed {
+export function composeLinkedInPost(
+  body: string,
+  tagHandles: string[],
+  readUrl?: string | null,
+): Composed {
   const base = body.trim();
   if (!base) return { ok: false, error: 'the post is empty' };
 
   const tags = dedupe(tagHandles).filter((t) => !mentions(base, t));
-  return { ok: true, text: tags.length ? `${base}\n\n${tags.join(' ')}` : base };
+  // No length worry here — LinkedIn allows 3000 and these posts sit far below
+  // it — so the link simply goes after the copy, before the mentions.
+  const link = readUrl && !base.includes(readUrl) ? `\n\n${READ_LABEL} ${readUrl}` : '';
+  return { ok: true, text: `${base}${link}${tags.length ? `\n\n${tags.join(' ')}` : ''}` };
 }
 
 /** Case-insensitive, and only on a whole-handle boundary — @koya must not match @koyatalent. */

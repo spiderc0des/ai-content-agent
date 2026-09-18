@@ -330,6 +330,44 @@ export async function startStageRun(requestId: string, stage: PipelineStage) {
   return StageRunRow.parse(rows[0]);
 }
 
+/**
+ * Close out stage runs that were left saying `running` by a process that died.
+ *
+ * A driver killed mid-stage — the platform's function limit, a crash, a
+ * redeploy — never reaches the code that records an outcome. The row keeps
+ * saying `running` forever, which is worse than saying nothing: the pipeline
+ * view reports "selection — running…" indefinitely and every human reading it
+ * concludes the system is working. A stage that has been "running" for longer
+ * than any stage takes did not survive, and saying so is the whole point of
+ * having a stage table.
+ *
+ * Called when a driver claims the lock, so the run that takes over cleans up
+ * after the one that did not come back. Scoped to one request and to rows
+ * older than the cutoff, so it can never close a stage that is genuinely in
+ * flight — including its own, which it starts afterwards.
+ *
+ * Returns what it reaped, so the caller can log it rather than fix it quietly.
+ */
+export async function reapStaleStageRuns(requestId: string, olderThan = '15 minutes') {
+  const rows = await sql`
+    update stage_runs
+       set status = 'failed',
+           finished_at = now(),
+           duration_ms = round(extract(epoch from (now() - started_at)) * 1000),
+           failure_reason = 'internal',
+           error = 'The run driving this stage stopped without reporting an outcome '
+                || '(most likely killed at the platform time limit). No result was recorded.'
+     where request_id = ${requestId}
+       and status = 'running'
+       and started_at < now() - ${olderThan}::interval
+    returning id, stage, attempt`;
+  return rows.map((r) => ({
+    id: String(r.id),
+    stage: String(r.stage),
+    attempt: Number(r.attempt),
+  }));
+}
+
 export type StageOutcome =
   | {
       ok: true;
@@ -1985,4 +2023,109 @@ export async function claimPublicationNow(id: string): Promise<PublicationRow | 
 export async function getPublication(id: string) {
   const rows = await sql`select * from publications where id = ${id}`;
   return rows.length ? PublicationRow.parse(rows[0]) : null;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   The public article — the one page with no sign-in
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * The address a published article is readable at, minted on first use.
+ *
+ * 128 bits of randomness, base64url. Not the request id: that is handed out in
+ * internal URLs all day and would let anyone holding one read the article —
+ * and, worse, let them guess neighbours. This token exists only for requests
+ * that have been approved, so unapproved work has no public address at all.
+ */
+export async function ensurePublicToken(requestId: string): Promise<string | null> {
+  const rows = await sql`
+    update content_requests
+    set public_token = coalesce(public_token, encode(gen_random_bytes(16), 'base64'))
+    where id = ${requestId} and approved_version_id is not null
+    returning public_token`;
+  if (!rows.length) return null;
+  // base64 from Postgres, made URL-safe here rather than in SQL so the
+  // alphabet is obvious at the point it matters.
+  const raw = String(rows[0]!.public_token);
+  const safe = raw.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  if (safe !== raw) {
+    await sql`update content_requests set public_token = ${safe} where id = ${requestId}`;
+  }
+  return safe;
+}
+
+export interface PublicArticle {
+  requestId: string;
+  title: string;
+  dek: string;
+  bodyMd: string;
+  versionId: string;
+  wordCount: number;
+  publishedAt: Date | null;
+}
+
+/**
+ * The article behind a public token.
+ *
+ * Returns the APPROVED version and nothing else — no options, no evaluations,
+ * no sources, no author. The page it feeds is the only unauthenticated surface
+ * in the app, so the query is the boundary: what it does not select cannot be
+ * rendered by mistake.
+ */
+export async function getPublicArticle(token: string): Promise<PublicArticle | null> {
+  const rows = await sql`
+    select r.id as request_id, av.id as version_id, av.title, av.dek, av.body_md,
+           av.word_count, r.approved_at
+    from content_requests r
+    join article_versions av on av.id = r.approved_version_id
+    where r.public_token = ${token} and r.deleted_at is null`;
+  if (!rows.length) return null;
+  const r = rows[0]!;
+  return {
+    requestId: String(r.request_id),
+    versionId: String(r.version_id),
+    title: String(r.title),
+    dek: String(r.dek ?? ''),
+    bodyMd: String(r.body_md),
+    wordCount: Number(r.word_count ?? 0),
+    publishedAt: r.approved_at ? new Date(String(r.approved_at)) : null,
+  };
+}
+
+/**
+ * Count a read, at most once per reader per day.
+ *
+ * The unique index does the deduplication, so a refresh is not a reader and
+ * two people behind one office NAT are one reader — imperfect, and honest
+ * about it, which beats a number inflated by every reload.
+ */
+export async function recordArticleView(v: {
+  requestId: string;
+  versionId: string;
+  visitorDay: string;
+  referrer: string | null;
+}): Promise<void> {
+  await sql`
+    insert into article_views (request_id, version_id, visitor_day, referrer)
+    values (${v.requestId}, ${v.versionId}, ${v.visitorDay}, ${v.referrer})
+    on conflict (request_id, visitor_day) do nothing`;
+}
+
+export interface ViewStats {
+  total: number;
+  last7: number;
+  lastViewedAt: Date | null;
+}
+
+export async function articleViewStats(requestId: string): Promise<ViewStats> {
+  const [row] = await sql`
+    select count(*)::int as total,
+           count(*) filter (where viewed_at > now() - interval '7 days')::int as last7,
+           max(viewed_at) as last_viewed
+    from article_views where request_id = ${requestId}`;
+  return {
+    total: Number(row!.total),
+    last7: Number(row!.last7),
+    lastViewedAt: row!.last_viewed ? new Date(String(row!.last_viewed)) : null,
+  };
 }

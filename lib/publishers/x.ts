@@ -36,7 +36,7 @@ export function xPublisher(): Publisher {
       // count. Checked at queue time too, but an asset can be regenerated
       // between queueing and release, and 280 is a hard platform limit — a
       // post one character over is rejected outright, not truncated.
-      const composed = composeXPost(asset.body, target.tagHandles);
+      const composed = composeXPost(asset.body, target.tagHandles, target.readUrl);
       if (!composed.ok) {
         return {
           ok: false,

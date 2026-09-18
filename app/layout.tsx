@@ -1,8 +1,9 @@
 import type { Metadata } from 'next';
 import { Plus_Jakarta_Sans } from 'next/font/google';
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import './globals.css';
 import { sessionEmail, currentUser } from '@/lib/auth';
+import { PATHNAME_HEADER } from '@/lib/verified-identity';
 import MobileNav, { type NavLink } from './MobileNav';
 import ThemeToggle from './ThemeToggle';
 
@@ -18,7 +19,18 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // at all (sessionEmail), and is it an activated app_users row
   // (currentUser). Someone pending has the first and not the second — and
   // they still need the header, because that is where "sign out" lives.
-  const [email, user, cookieStore] = await Promise.all([sessionEmail(), currentUser(), cookies()]);
+  const [email, user, cookieStore, headerList] = await Promise.all([
+    sessionEmail(),
+    currentUser(),
+    cookies(),
+    headers(),
+  ]);
+
+  // The public article page is the one surface with no sign-in, and it gets no
+  // app chrome: a header offering Review, Queue and Admin is meaningless to
+  // someone arriving from a newsletter, and reads as an invitation to poke at
+  // a tool that is not theirs.
+  const isReaderPage = (headerList.get(PATHNAME_HEADER) ?? '').startsWith('/read/');
   const initial = email ? email[0]!.toUpperCase() : '?';
 
   const theme = cookieStore.get('theme')?.value;
@@ -38,6 +50,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html lang="en" data-theme={theme === 'dark' || theme === 'light' ? theme : undefined}>
       <body className={font.className}>
+        {!isReaderPage && (
         <header
           className="sticky top-0 z-10 border-b"
           style={{ borderColor: 'var(--rule)', background: 'var(--card)' }}
@@ -99,10 +112,15 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             )}
           </div>
         </header>
+        )}
 
         {/* Wide enough for the request workspace to use columns; the list
-            pages re-narrow themselves. */}
-        <main className="mx-auto max-w-5xl px-4 py-8 sm:px-6">{children}</main>
+            pages re-narrow themselves. The reader page brings its own. */}
+        {isReaderPage ? (
+          children
+        ) : (
+          <main className="mx-auto max-w-5xl px-4 py-8 sm:px-6">{children}</main>
+        )}
       </body>
     </html>
   );

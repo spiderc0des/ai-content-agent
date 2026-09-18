@@ -272,7 +272,10 @@ export default function RequestForm() {
                 </option>
               ))}
             </select>
-            <p className="hint">{depthProfile(values.research_depth).hint}</p>
+            <p className="hint">
+              {depthProfile(values.research_depth).hint}{' '}
+              Research takes {depthProfile(values.research_depth).pace}.
+            </p>
           </div>
 
           <div>

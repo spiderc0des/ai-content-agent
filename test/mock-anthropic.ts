@@ -522,7 +522,7 @@ Just someone who notices when it slips.
     subject: `The ${kw} problem nobody owns`,
     preheader: 'Ownership beats method, every time.',
     intro: `Most ${kw} work fails quietly. It fails because nobody owns it. Here is the fix.`,
-    main_section_md: `## What goes wrong
+    main_section_md: `**What goes wrong**
 
 - The work is spread across everyone
 - Nothing is visibly broken on any given day
@@ -532,7 +532,7 @@ Just someone who notices when it slips.
     sign_off: 'Until next week,\nThe Koya team',
     body_md: `Most ${kw} work fails quietly. It fails because nobody owns it. Here is the fix.
 
-## What goes wrong
+**What goes wrong**
 
 - The work is spread across everyone on the team
 - Nothing is visibly broken on any given day
@@ -544,7 +544,7 @@ that degrades slowly enough that no single week looks like the problem.
 Teams notice the cost eventually. By then it reads as culture rather than as
 a process gap, which makes it far harder to argue about.
 
-## What the evidence says
+**What the evidence says**
 
 Teams with a named owner resolve issues forty per cent faster than teams
 without one. That is a large gap for a change that costs nothing.
@@ -552,7 +552,7 @@ without one. That is a large gap for a change that costs nothing.
 It is not about talent and it is not about tooling. It is about who notices
 when something slips, and whether that person can do anything about it.
 
-## What to change first
+**What to change first**
 
 Name one owner. Give them authority over the process, not merely the duty to
 report on how it is going.
