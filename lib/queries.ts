@@ -258,16 +258,42 @@ export async function getRequest(id: string) {
   return rows.length ? ContentRequestRow.parse(rows[0]) : null;
 }
 
-export async function listRequests(opts: { authorId?: string; limit?: number } = {}) {
-  const rows = opts.authorId
-    ? await sql`
-        select * from content_requests
-        where deleted_at is null and author_id = ${opts.authorId}
-        order by updated_at desc limit ${opts.limit ?? 100}`
-    : await sql`
-        select * from content_requests where deleted_at is null
-        order by updated_at desc limit ${opts.limit ?? 100}`;
+export async function listRequests(
+  opts: { authorId?: string; status?: string; limit?: number } = {},
+) {
+  // Filtering happens in the WHERE clause, not in TypeScript afterwards. The
+  // list is capped, so filtering a capped page would quietly show a subset of
+  // a subset — "3 failed" in the tab and one of them missing from the list.
+  const limit = opts.limit ?? 100;
+  const rows = await sql`
+    select * from content_requests
+    where deleted_at is null
+      ${opts.authorId ? sql`and author_id = ${opts.authorId}` : sql``}
+      ${opts.status ? sql`and status = ${opts.status}::request_status` : sql``}
+    order by updated_at desc
+    limit ${limit}`;
   return rows.map((r) => ContentRequestRow.parse(r));
+}
+
+/**
+ * How many requests sit at each status.
+ *
+ * Counted in the database rather than over the rows the page happens to have
+ * loaded, because that list is capped at 100. Tallying in TypeScript would
+ * make the filter counts silently wrong at exactly the point they start being
+ * useful — the moment there is more work than fits on one page.
+ */
+export async function countRequestsByStatus(
+  opts: { authorId?: string } = {},
+): Promise<Record<string, number>> {
+  const rows = await sql`
+    select status, count(*)::int as n from content_requests
+    where deleted_at is null
+      ${opts.authorId ? sql`and author_id = ${opts.authorId}` : sql``}
+    group by status`;
+  const out: Record<string, number> = {};
+  for (const r of rows) out[String(r.status)] = Number(r.n);
+  return out;
 }
 
 /** Requests sitting at the human gate — what the review queue shows. */

@@ -8,7 +8,7 @@ import { depthProfile } from './research-depth';
 import { groundClaims } from './grounding';
 import { assessSource } from './source-quality';
 import { nextAfterEvaluation, shouldStopRepeating } from './permissions';
-import { checkChannel, failureSummary, failureInstructions } from './channel-rules';
+import { checkChannel, failureSummary, failureInstructions, type RuleReport } from './channel-rules';
 import type { ContentRequestRow, PipelineStage } from './db-schemas';
 import type { Channel, Intake } from './schemas';
 import { CHANNELS } from './schemas';
@@ -1201,7 +1201,20 @@ export async function runPackaging(request: ContentRequestRow): Promise<StageRes
         produced.push(channel);
         continue;
       }
-      let feedback: string | undefined;
+      // Start from what the LAST attempt broke, not from nothing.
+      //
+      // A regenerate used to begin blind: attempt 1 was handed no feedback, so
+      // pressing Regenerate on a failing asset threw away the diagnosis
+      // already sitting in the database and re-made the same mistake before it
+      // could learn anything. Two manual regenerates therefore bought one
+      // informed attempt each instead of two.
+      const lastFailed = existing.find(
+        (a) => a.channel === channel && a.version_id === version.id && !a.rules_pass,
+      );
+      let feedback =
+        lastFailed && lastFailed.rules_json
+          ? failureInstructions(channel, lastFailed.rules_json as unknown as RuleReport, lastFailed.body)
+          : undefined;
       let done = false;
 
       for (let attempt = 1; attempt <= 2 && !done; attempt++) {

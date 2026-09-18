@@ -76,10 +76,18 @@ export function paragraphs(md: string): string[] {
     );
 }
 
-/** Sentence count, tolerant of abbreviations that end in a period. */
+/**
+ * Sentence count, tolerant of abbreviations that end in a period.
+ *
+ * A fragment with no letters or digits in it is not a sentence. Without that,
+ * a paragraph ending "Drop your test below. 👇" counts as four sentences
+ * rather than three, and a post gets failed for a rule it did not break —
+ * which is worse than a rule that is merely strict, because no amount of
+ * rewriting fixes it.
+ */
 export function sentenceCount(text: string): number {
   const cleaned = text.replace(/\b(e\.g|i\.e|etc|vs|Mr|Mrs|Dr|St)\./gi, '$1');
-  return cleaned.split(/[.!?]+(?:\s|$)/).filter((s) => s.trim().length > 0).length;
+  return cleaned.split(/[.!?]+(?:\s|$)/).filter((s) => /[\p{L}\p{N}]/u.test(s)).length;
 }
 
 export function links(md: string): { anchor: string; url: string }[] {

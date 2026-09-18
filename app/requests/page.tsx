@@ -1,14 +1,44 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { requireUser, AuthError } from '@/lib/auth';
-import { listRequests } from '@/lib/queries';
+import { listRequests, countRequestsByStatus } from '@/lib/queries';
 import StatusPill from '../StatusPill';
 import NotAuthorized from '../NotAuthorized';
 import DeleteRequestButton from './DeleteRequestButton';
 
 export const dynamic = 'force-dynamic';
 
-export default async function RequestsPage() {
+/**
+ * Lifecycle order, so the tabs read as a pipeline rather than an alphabet.
+ * Statuses with nothing in them are left out — eighteen chips, fifteen of them
+ * zero, is a filter that hides the three that matter.
+ */
+const STATUS_ORDER = [
+  'draft',
+  'blocked',
+  'researching',
+  'retrieving',
+  'selecting',
+  'planning',
+  'generating',
+  'evaluating',
+  'revising',
+  'awaiting_review',
+  'approved',
+  'rejected',
+  'packaging',
+  'ready',
+  'queued',
+  'published',
+  'failed',
+  'archived',
+];
+
+export default async function RequestsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ status?: string }>;
+}) {
   let user;
   try {
     user = await requireUser();
@@ -19,7 +49,16 @@ export default async function RequestsPage() {
   }
 
   const seesAll = user.is_reviewer || user.is_publisher || user.is_admin;
-  const requests = await listRequests(seesAll ? {} : { authorId: user.id });
+  const scope = seesAll ? {} : { authorId: user.id };
+
+  const { status } = await searchParams;
+  const counts = await countRequestsByStatus(scope);
+  // An unknown or now-empty status falls back to everything rather than
+  // rendering an empty list with no way back — a stale bookmark should not
+  // look like "you have no requests".
+  const active = status && counts[status] ? status : undefined;
+  const requests = await listRequests({ ...scope, status: active });
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
 
   return (
     <div>
@@ -32,6 +71,21 @@ export default async function RequestsPage() {
         </div>
         <Link href="/new" className="btn btn-primary">New request</Link>
       </div>
+
+      {total > 0 && (
+        <nav className="mb-5 flex flex-wrap gap-2" aria-label="Filter by status">
+          <FilterChip label="All" count={total} active={!active} href="/requests" />
+          {STATUS_ORDER.filter((s) => counts[s]).map((s) => (
+            <FilterChip
+              key={s}
+              label={s.replace(/_/g, ' ')}
+              count={counts[s]}
+              active={active === s}
+              href={`/requests?status=${s}`}
+            />
+          ))}
+        </nav>
+      )}
 
       {requests.length === 0 ? (
         <div className="card text-center" style={{ color: 'var(--ink-soft)' }}>
@@ -73,6 +127,33 @@ export default async function RequestsPage() {
         </ul>
       )}
     </div>
+  );
+}
+
+function FilterChip({
+  label,
+  count,
+  active,
+  href,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  href: string;
+}) {
+  return (
+    // badge-accent rather than a hand-rolled colour: it is already defined for
+    // both themes, and the accent is a pale green in dark mode, so white text
+    // on it would be unreadable.
+    <Link
+      href={href}
+      aria-current={active ? 'page' : undefined}
+      className={active ? 'badge badge-accent' : 'badge'}
+      style={{ textDecoration: 'none', fontWeight: active ? 600 : undefined }}
+    >
+      {label}
+      <span style={{ opacity: 0.65, marginLeft: '0.4em' }}>{count}</span>
+    </Link>
   );
 }
 
