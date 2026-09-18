@@ -98,27 +98,117 @@ export async function driveAndContinue(
     return result;
   }
 
+  const base = (origin ?? env.APP_URL).replace(/\/$/, '');
+  const handoff = await callContinue(base, requestId, hop + 1);
+
+  // A hand-off that was REFUSED because something else already holds the lock
+  // is the one worth trying twice. It is a race with the slice that just
+  // released it — rare, and entirely recoverable a second later. Every other
+  // refusal is a real answer and retrying would only repeat it.
+  const retried =
+    handoff.outcome === 'refused' && /claimed it first|already has it/.test(handoff.reason ?? '')
+      ? await (async () => {
+          await new Promise((r) => setTimeout(r, 1500));
+          return callContinue(base, requestId, hop + 1);
+        })()
+      : null;
+
+  const final = retried ?? handoff;
+
+  // Always logged, success included. The chain used to be invisible: the fetch
+  // was awaited but its RESPONSE was never looked at, so a 401, a 404, or a
+  // plain `continued: false` all resolved like a success and the run simply
+  // stopped with nothing in the log to say why. A request sat at `evaluating`
+  // with every stage green, no lock, no error, and no explanation — the whole
+  // point of the hand-off is that it is the thing keeping the pipeline alive,
+  // which makes it the last thing that should fail quietly.
+  await logEvent({
+    requestId,
+    actor,
+    stage: null,
+    step: final.outcome === 'accepted' ? 'pipeline_handoff' : 'pipeline_handoff_failed',
+    ok: final.outcome === 'accepted',
+    detail: {
+      hop: hop + 1,
+      status: final.status ?? null,
+      reason: final.reason ?? null,
+      retried: retried !== null,
+      from_status: result.finalStatus,
+    },
+  }).catch(() => {});
+
+  return result;
+}
+
+export interface HandoffResult {
+  /** accepted — the next slice took it. refused — it answered, but declined. */
+  outcome: 'accepted' | 'refused' | 'unreachable';
+  status?: number;
+  reason?: string;
+}
+
+/**
+ * Call the continue endpoint and find out what it actually said.
+ *
+ * `fetch` rejects only on a transport failure. An HTTP 401 or 503 resolves
+ * perfectly happily, and so does a 200 carrying `continued: false` — so the
+ * response has to be read, not merely awaited.
+ */
+async function callContinue(base: string, requestId: string, hop: number): Promise<HandoffResult> {
+  let res: Response;
   try {
-    const base = (origin ?? env.APP_URL).replace(/\/$/, '');
-    await fetch(`${base}/api/requests/${requestId}/continue`, {
+    res = await fetch(`${base}/api/requests/${requestId}/continue`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${env.CRON_SECRET}`,
-        [HOP_HEADER]: String(hop + 1),
+        [HOP_HEADER]: String(hop),
       },
     });
   } catch (err) {
-    // The chain is broken but the request is intact and unlocked, so the cron
-    // safety net still picks it up. Recorded rather than thrown.
-    await logEvent({
-      requestId,
-      actor,
-      stage: null,
-      step: 'pipeline_handoff_failed',
-      ok: false,
-      detail: { error: err instanceof Error ? err.message : String(err), hop },
-    }).catch(() => {});
+    return { outcome: 'unreachable', reason: err instanceof Error ? err.message : String(err) };
   }
 
-  return result;
+  let body: ContinueBody | null = null;
+  try {
+    body = (await res.json()) as ContinueBody;
+  } catch {
+    body = null;
+  }
+
+  return interpretContinueResponse(res.ok, res.status, body);
+}
+
+export interface ContinueBody {
+  continued?: boolean;
+  reason?: string;
+  error?: string;
+}
+
+/**
+ * What the continue endpoint's answer actually means.
+ *
+ * Split out from the fetch so it can be tested without a server. The rule that
+ * matters: a 200 is not success. The endpoint answers `continued: false` with
+ * a perfectly healthy 200 when there is nothing to run or someone else has the
+ * lock, and treating that as "handed off" is how a chain dies with every stage
+ * green and nothing in the log.
+ */
+export function interpretContinueResponse(
+  ok: boolean,
+  status: number,
+  body: ContinueBody | null,
+): HandoffResult {
+  // Not JSON at all is itself the diagnosis — most often an error page from
+  // something that is not this application, which is what a stale APP_URL
+  // produces.
+  if (body === null) {
+    return { outcome: 'refused', status, reason: `non-JSON response (${status})` };
+  }
+  if (!ok) {
+    return { outcome: 'refused', status, reason: body.error ?? `HTTP ${status}` };
+  }
+  if (body.continued === false) {
+    return { outcome: 'refused', status, reason: body.reason ?? 'declined' };
+  }
+  return { outcome: 'accepted', status };
 }
