@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { RUN_BUDGET_MS, STAGE_RESERVE_MS, reserveFor } from '../lib/pipeline';
+import { RUN_BUDGET_MS, STAGE_RESERVE_MS, RESEARCH_RESERVE_MS, reserveFor } from '../lib/pipeline';
 
 /**
  * The driver has to stop between stages, never inside one.
@@ -25,48 +25,86 @@ describe('the run budget reserves time for the stage it is about to start', () =
   const wouldStart = (elapsedMs: number, stage: string) =>
     elapsedMs + reserveFor(stage) <= RUN_BUDGET_MS;
 
-  it('refuses to start a stage it cannot finish — the exact stall that happened', () => {
-    const elapsed = (6 + 164 + 66) * 1000; // audit + research + retrieval, measured
-    expect(elapsed).toBeLessThan(RUN_BUDGET_MS); // the old check said "carry on"
-    expect(wouldStart(elapsed, 'selection')).toBe(false); // the new one does not
+  it('refuses to start a stage it cannot finish', () => {
+    // 236s of a 270s budget, then a stage that needs 90. No room.
+    expect(wouldStart(236_000, 'selection')).toBe(false);
+  });
+
+  it('fits a whole quick run into a handful of slices', () => {
+    // The reserves were first set near each stage's maximum, which made the
+    // arithmetic self-defeating: nothing fitted beside anything, so a run of
+    // nine stages spent a hand-off on each and exhausted its hop budget with
+    // seven minutes of work done. Replaying a real run's measured timings, a
+    // slice must now carry several stages.
+    const run: [string, number][] = [
+      ['audit', 4], ['research', 44], ['retrieval', 57], ['selection', 53],
+      ['planning', 39], ['generation', 66], ['evaluation', 55], ['revision', 99],
+      ['evaluation', 55],
+    ];
+    let slices = 1;
+    let elapsed = 0;
+    let stagesInSlice = 0;
+    for (const [stage, secs] of run) {
+      if (stagesInSlice > 0 && elapsed + reserveFor(stage, 'quick') > RUN_BUDGET_MS) {
+        slices++;
+        elapsed = 0;
+        stagesInSlice = 0;
+      }
+      elapsed += secs * 1000;
+      stagesInSlice++;
+    }
+    // Slices minus the first one are hand-offs, and MAX_HOPS is 3.
+    expect(slices - 1).toBeLessThanOrEqual(3);
   });
 
   it('still starts a stage when there is genuinely room', () => {
     expect(wouldStart(30_000, 'planning')).toBe(true);
   });
 
-  it('reserves at least as long as each stage is known to take', () => {
-    // Averages measured from this system's own stage_runs. A reserve below the
-    // average means the driver expects to be killed half the time.
-    const measuredAvgMs = {
-      audit: 8_000,
-      research: 244_000,
-      retrieval: 80_000,
-      selection: 92_000,
+  it('reserves more than each stage typically takes', () => {
+    // p50 from recent successful runs. A reserve below the median means the
+    // driver expects to be killed more often than not; far above it means
+    // nothing ever shares a slice. These sit between, at roughly p75.
+    const measuredP50Ms = {
+      audit: 6_000,
+      retrieval: 58_000,
+      selection: 57_000,
       planning: 48_000,
-      generation: 99_000,
-      evaluation: 89_000,
-      revision: 165_000,
-      packaging: 58_000,
+      generation: 76_000,
+      evaluation: 65_000,
+      revision: 118_000,
+      packaging: 33_000,
     };
-    for (const [stage, avg] of Object.entries(measuredAvgMs)) {
-      expect(reserveFor(stage), stage).toBeGreaterThanOrEqual(avg);
+    for (const [stage, p50] of Object.entries(measuredP50Ms)) {
+      expect(reserveFor(stage), stage).toBeGreaterThan(p50);
+      // And not absurdly above it, which is the failure this replaced. A flat
+      // floor alongside the ratio, because for a six-second stage like audit a
+      // pure multiple is meaninglessly tight — 20s against 6s wastes nothing.
+      expect(reserveFor(stage), stage).toBeLessThanOrEqual(Math.max(p50 * 3, p50 + 30_000));
     }
+  });
+
+  it('reserves for research by depth, since depth is what sets its length', () => {
+    expect(reserveFor('research', 'quick')).toBeLessThan(reserveFor('research', 'standard'));
+    expect(reserveFor('research', 'standard')).toBeLessThanOrEqual(reserveFor('research', 'deep'));
+    // Quick research has to be able to follow the audit in the same slice.
+    expect(20_000 + reserveFor('research', 'quick')).toBeLessThanOrEqual(RUN_BUDGET_MS);
   });
 
   it('assumes the worst for a stage it has never heard of', () => {
     // A stage added later must not default to "plenty of time".
     expect(reserveFor('some_new_stage')).toBeGreaterThanOrEqual(
-      Math.max(...Object.values(STAGE_RESERVE_MS)),
+      Math.max(...Object.values(STAGE_RESERVE_MS), ...Object.values(RESEARCH_RESERVE_MS)),
     );
   });
 
   it('lets the first stage of a slice run however long it needs', () => {
-    // research reserves more than the whole budget, so it can only ever run as
-    // the first stage of a slice — which is correct, and is why the check is
-    // guarded by `stagesRun > 0`. Without that guard a fresh slice whose next
-    // stage is research would hand off forever and never do any work.
-    expect(reserveFor('research')).toBeGreaterThan(RUN_BUDGET_MS);
+    // Deep research reserves more than the whole budget, so at that depth it
+    // can only ever run as the first stage of a slice — which is correct, and
+    // is why the check is guarded by `stagesRun > 0`. Without that guard a
+    // fresh slice whose next stage is research would hand off forever and
+    // never do any work at all.
+    expect(reserveFor('research', 'deep')).toBeGreaterThan(RUN_BUDGET_MS);
   });
 
   it('keeps the budget inside the platform limit, with room for an overrun', () => {
