@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { RUN_BUDGET_MS, STAGE_RESERVE_MS, RESEARCH_RESERVE_MS, reserveFor } from '../lib/pipeline';
 
 /**
@@ -126,5 +128,53 @@ describe('the run budget reserves time for the stage it is about to start', () =
     const PLATFORM_LIMIT_MS = 300_000;
     const overrunAllowance = PLATFORM_LIMIT_MS - RUN_BUDGET_MS;
     expect(overrunAllowance).toBeGreaterThanOrEqual(30_000);
+  });
+});
+
+/**
+ * A heartbeat proves a PROCESS is alive. It does not prove the WORK is moving.
+ *
+ * Observed: a driver held the lock for 24 minutes, heartbeating every 20
+ * seconds, having never written a stage row. The dev server had not been
+ * restarted, no query was in flight, and every database call the stage makes
+ * ran in under two seconds when tested directly. The run looked healthier than
+ * one that had died, because a dead one at least goes quiet.
+ *
+ * So the heartbeat expires at the platform's own ceiling. Past 300 seconds a
+ * drive either cannot exist (Vercel has killed the function) or is stuck
+ * (locally, where nothing kills it) — either way it has stopped being evidence
+ * of anything.
+ */
+describe('the heartbeat stops claiming a stuck drive is alive', () => {
+  const PIPELINE = readFileSync(join(process.cwd(), 'lib', 'pipeline.ts'), 'utf8');
+
+  it('expires at or before the platform function limit', () => {
+    const m = /const MAX_DRIVE_MS = ([\d_]+);/.exec(PIPELINE);
+    expect(m).not.toBeNull();
+    expect(Number(m![1].replace(/_/g, ''))).toBeLessThanOrEqual(300_000);
+  });
+
+  it('gives a legitimate drive room to finish within its budget', () => {
+    // The cap must never cut short a run that is behaving: the budget plus the
+    // largest reserve a stage can overrun by still has to fit underneath it.
+    const m = /const MAX_DRIVE_MS = ([\d_]+);/.exec(PIPELINE);
+    expect(Number(m![1].replace(/_/g, ''))).toBeGreaterThan(RUN_BUDGET_MS);
+  });
+
+  it('checks the elapsed time inside the interval, not just at the start', () => {
+    // Setting it once at drive time would not help: the whole failure is a
+    // drive that never reaches the code that would clear it.
+    const at = PIPELINE.indexOf('const heartbeat = setInterval');
+    expect(at).toBeGreaterThan(-1);
+    const body = PIPELINE.slice(at, at + 2600);
+    expect(body).toContain('MAX_DRIVE_MS');
+    expect(body).toContain('clearInterval(heartbeat)');
+    // A wedged drive must let go of the lock, not merely go quiet — otherwise
+    // it holds the request until a human notices.
+    expect(body).toContain('releasePipelineLock');
+    expect(body).toContain('drive_watchdog');
+    // But only when nothing is actually in flight. Elapsed time alone fired
+    // on a 657-second research call that was working perfectly.
+    expect(body).toContain('hasRunningStage');
   });
 });

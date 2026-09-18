@@ -61,6 +61,57 @@ function intakeOf(r: ContentRequestRow): Partial<Intake> {
 }
 
 /**
+ * Run per-item work concurrently, with a ceiling on how many are in flight.
+ *
+ * Every stage that makes one Claude call per item — per source, per option,
+ * per channel — was doing them one after another, so the stage cost the SUM
+ * of its calls rather than roughly the slowest one. Retrieval with ten
+ * readable sources was ten calls in series for no reason: they share nothing
+ * and neither depends on another's answer.
+ *
+ * Bounded rather than a bare Promise.all, because the item counts are not
+ * fixed. Thirteen simultaneous calls is how a rate limit gets hit, and a 429
+ * storm costs more time than the serialisation saved. Five in flight is well
+ * inside any per-minute allowance while still collapsing most of the wait.
+ *
+ * Results come back in input order, so logs and stored rows stay in the order
+ * a person would expect regardless of which call finished first.
+ */
+async function mapWithLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+/**
+ * How many per-item Claude calls may be in flight within one stage.
+ *
+ * Bounded by the DATABASE, not by the API. Each concurrent item persists its
+ * result, and some of those writes open a transaction (insertExcerpts does),
+ * which holds a pooled connection for its whole duration. Run more of these
+ * at once than the pool can serve and the stage does not fail — it queues,
+ * silently, forever.
+ *
+ * Four against a pool of twenty leaves ample room for the heartbeat, the
+ * drive's own reads, and every open page polling the status endpoint.
+ */
+const STAGE_CONCURRENCY = 4;
+
+/**
  * Wrap a stage so that a Claude failure and a thrown error both land in the
  * same place: a failed stage_run, a failed request with the stage named, and
  * a StageResult the route can return as JSON.
@@ -224,13 +275,6 @@ export async function runAudit(request: ContentRequestRow): Promise<StageResult>
  */
 const MIN_READABLE_SOURCES = 7; // the Standard profile's value, kept for messages
 
-/**
- * At most three research calls — the first plus two top-ups. Research is the
- * single most expensive call in the pipeline (real searching and fetching,
- * ~220s on average), so the ceiling is low on purpose: this is insurance
- * against a bad draw of publishers, not an attempt to scour the web.
- */
-const MAX_RESEARCH_ROUNDS = 3;
 
 /**
  * Research, topped up when too little of it can actually be read.
@@ -451,6 +495,11 @@ export async function runRetrieval(request: ContentRequestRow): Promise<StageRes
     /** Sources that could not contribute quotes, and why. Not errors. */
     const skipped: string[] = [];
 
+    // Decide what each source needs before calling anything, so the calls
+    // themselves can go out together. This pass is all local checks and small
+    // writes — no Claude, nothing worth overlapping.
+    const toDigest: { source: (typeof sources)[number]; text: string }[] = [];
+
     for (const source of sources) {
       if (source.status === 'digested') {
         digested++;
@@ -481,13 +530,25 @@ export async function runRetrieval(request: ContentRequestRow): Promise<StageRes
         );
         continue;
       }
-      const text = source.raw_text!.trim();
+      toDigest.push({ source, text: source.raw_text!.trim() });
+    }
 
-      const outcome = await claude.digestSource({
+    // One call per source, several at a time. These are independent — no
+    // source's digest depends on another's — so running them in series only
+    // ever added up their latencies.
+    const digests = await mapWithLimit(toDigest, STAGE_CONCURRENCY, async ({ source, text }) => ({
+      source,
+      outcome: await claude.digestSource({
         sourceText: text,
         sourceTitle: source.title,
         context,
-      });
+      }),
+    }));
+
+    // Persisting stays serial: the writes are short, and keeping them in input
+    // order means the excerpt numbering does not depend on which call
+    // happened to answer first.
+    for (const { source, outcome } of digests) {
       usage.add(outcome);
 
       if (!outcome.ok) {
@@ -863,33 +924,50 @@ export async function runEvaluation(request: ContentRequestRow): Promise<StageRe
     const usage = new UsageTally();
     const statuses: string[] = [];
 
+    // Work out which versions still need scoring, and gather what each call
+    // needs, before making any of them.
+    const pending: { version: (typeof versions)[number]; claims: Awaited<ReturnType<typeof q.getClaims>> }[] = [];
+
     for (const version of versions) {
       // unique(version_id) — a version can never be re-scored, only a new
       // version scored. Skip anything already evaluated so a retry of this
       // stage does not collide.
-      if (await q.getEvaluationFor(version.id)) {
-        const existing = await q.getEvaluationFor(version.id);
-        statuses.push(existing!.status);
+      //
+      // One lookup, not two: this asked the same question twice on every
+      // iteration, which on a three-option request is three wasted round
+      // trips to a database in another region.
+      const existing = await q.getEvaluationFor(version.id);
+      if (existing) {
+        statuses.push(existing.status);
         continue;
       }
+      pending.push({ version, claims: await q.getClaims(version.id) });
+    }
 
-      const claims = await q.getClaims(version.id);
+    // One call per option, several at a time. Each option is scored on its
+    // own merits, so nothing here needed to wait for the option before it.
+    const evaluated = await mapWithLimit(pending, STAGE_CONCURRENCY, async ({ version, claims }) => {
       const seo = version.seo_json as unknown as ReturnType<typeof checkSeo>;
+      return {
+        version,
+        outcome: await claude.evaluateArticle({
+          intake: intakeOf(request),
+          title: version.title,
+          bodyMd: version.body_md,
+          claims: claims.map((c) => ({
+            claim_text: c.claim_text,
+            support: c.support,
+            excerpt_ids: [],
+          })),
+          selected,
+          seoFindings: (seo?.checks ?? [])
+            .map((c) => `${c.pass ? 'PASS' : 'FAIL'} ${c.label}: ${c.detail}`)
+            .join('\n'),
+        }),
+      };
+    });
 
-      const outcome = await claude.evaluateArticle({
-        intake: intakeOf(request),
-        title: version.title,
-        bodyMd: version.body_md,
-        claims: claims.map((c) => ({
-          claim_text: c.claim_text,
-          support: c.support,
-          excerpt_ids: [],
-        })),
-        selected,
-        seoFindings: (seo?.checks ?? [])
-          .map((c) => `${c.pass ? 'PASS' : 'FAIL'} ${c.label}: ${c.detail}`)
-          .join('\n'),
-      });
+    for (const { version, outcome } of evaluated) {
       usage.add(outcome);
 
       if (!outcome.ok) {
@@ -1269,11 +1347,14 @@ export async function runPackaging(request: ContentRequestRow): Promise<StageRes
       existing.filter((a) => a.rules_pass && a.version_id === version.id).map((a) => a.channel),
     );
 
-    for (const channel of wanted) {
-      if (alreadyGood.has(channel)) {
-        produced.push(channel);
-        continue;
-      }
+    // Channels are independent — LinkedIn's wording has no bearing on the
+    // newsletter's — so they are packaged together rather than in turn. The
+    // retry inside each channel stays serial, because attempt two is the one
+    // that gets told what attempt one broke.
+    const todo = wanted.filter((c) => !alreadyGood.has(c));
+    for (const channel of wanted) if (alreadyGood.has(channel)) produced.push(channel);
+
+    await mapWithLimit(todo, STAGE_CONCURRENCY, async (channel) => {
       // Start from what the LAST attempt broke, not from nothing.
       //
       // A regenerate used to begin blind: attempt 1 was handed no feedback, so
@@ -1339,7 +1420,7 @@ export async function runPackaging(request: ContentRequestRow): Promise<StageRes
           if (attempt === 2) problems.push(`${channel}: ${failureSummary(report)}`);
         }
       }
-    }
+    });
 
     if (!produced.length) {
       throw new Error(`No channel asset passed its formatting rules. ${problems.join('; ')}`);
@@ -1513,6 +1594,17 @@ export const RUN_BUDGET_MS = Number(process.env.PIPELINE_RUN_BUDGET_MS ?? 270_00
 const HEARTBEAT_MS = 20_000;
 
 /**
+ * The longest a drive can claim to be alive.
+ *
+ * The platform kills a function at 300 seconds, so a drive that has been
+ * going longer than that is not running on Vercel — and where nothing kills
+ * it, it is stuck rather than working. Past this the heartbeat stops, the
+ * lock goes stale three minutes later, and the request becomes reclaimable by
+ * a driver that will actually move it.
+ */
+const MAX_DRIVE_MS = 300_000;
+
+/**
  * How long each stage usually takes, in milliseconds.
  *
  * These are the 75th percentile of recent successful runs, NOT the maximum.
@@ -1648,9 +1740,36 @@ export async function drivePipeline(requestId: string, actor: string): Promise<D
   //
   // Ticking while the work is in flight makes a quiet heartbeat mean what it
   // says: nobody is driving this.
-  const heartbeat = setInterval(() => {
-    void q.heartbeatPipelineLock(requestId).catch(() => {});
-  }, HEARTBEAT_MS);
+  //
+  // But only up to a point, and the point matters. A heartbeat proves a
+  // PROCESS is alive; it does not prove the WORK is moving. A driver that
+  // blocks before it writes its first stage row goes on heartbeating happily
+  // forever, holding the lock, looking healthier than a driver that died —
+  // which is the same failure this project keeps meeting, wearing the badge
+  // that was meant to detect it.
+  //
+  // So the heartbeat stops at the platform's own ceiling. Past 300 seconds a
+  // drive either cannot exist (Vercel has killed the function) or is stuck
+  // (here, where nothing kills it). Either way it has stopped being evidence
+  // of anything, and going quiet is what lets the lock go stale and the
+  // request be picked up by somebody who will actually move it.
+  // Say that the drive began, before anything can block.
+  //
+  // Three rounds of diagnosis were lost to not having this. A request would
+  // sit with its lock held and its heartbeat ticking, with no stage row and
+  // no event — so there was no way to tell whether the driver had started and
+  // wedged, or never started at all. Those need completely different fixes,
+  // and the log could not distinguish them.
+  await q
+    .logEvent({
+      requestId,
+      actor,
+      stage: null,
+      step: 'drive_started',
+      ok: true,
+      detail: { reaped: reaped.length },
+    })
+    .catch(() => {});
 
   let stagesRun = 0;
   let finalStatus = 'unknown';
@@ -1663,6 +1782,59 @@ export async function drivePipeline(requestId: string, actor: string): Promise<D
   let lastStage: string | null = null;
   let lastStatus: string | null = null;
   let repeats = 0;
+
+  const heartbeat = setInterval(() => {
+    void (async () => {
+      if (Date.now() - startedAt <= MAX_DRIVE_MS) {
+        await q.heartbeatPipelineLock(requestId).catch(() => {});
+        return;
+      }
+
+      // Past the ceiling — but that alone does not mean wedged.
+      //
+      // The first version of this released the lock on elapsed time only, and
+      // it was wrong: research has been measured completing successfully at
+      // 657 seconds, and the watchdog fired at 300 while the call was still
+      // genuinely working. Abandoning a stage that was about to finish is a
+      // worse failure than the one this was built to catch.
+      //
+      // A stage row is the discriminator. runStage writes it before it makes
+      // the call, so work in flight always has one; a driver that wedged
+      // before starting its stage has none. That is exactly the shape of the
+      // stall this exists for.
+      if (await q.hasRunningStage(requestId).catch(() => true)) {
+        await q.heartbeatPipelineLock(requestId).catch(() => {});
+        return;
+      }
+
+    // Past the ceiling. Stop vouching for this drive, say so where the
+    // request's own log will show it, and let the lock go — otherwise a
+    // driver that has wedged holds the request hostage indefinitely, which
+    // is exactly what this was built to prevent and was instead causing.
+    //
+    // Releasing under a drive that might still be alive is deliberate. It
+    // cannot double-spend: a second driver claims the lock by conditional
+    // UPDATE, and stage_runs is unique on (request_id, stage, attempt), so a
+    // duplicate attempt is a database error rather than a second bill.
+      clearInterval(heartbeat);
+      await q
+        .logEvent({
+          requestId,
+          actor,
+          stage: null,
+          step: 'drive_watchdog',
+          ok: false,
+          detail: {
+            seconds: Math.round((Date.now() - startedAt) / 1000),
+            stages_run: stagesRun,
+            last_stage: lastStage,
+            note: 'the driver stopped without a stage in flight; lock released so something else can take it',
+          },
+        })
+        .catch(() => {});
+      await q.releasePipelineLock(requestId).catch(() => {});
+    })();
+  }, HEARTBEAT_MS);
 
   try {
     for (let i = 0; i < MAX_STAGES_PER_RUN; i++) {
@@ -1747,6 +1919,20 @@ export async function drivePipeline(requestId: string, actor: string): Promise<D
       }
       lastStage = stage;
       lastStatus = request.status;
+
+      // Before, not only after. `drive_<stage>` is written when a stage
+      // COMPLETES, so a stage that never returns leaves no trace of having
+      // been attempted — which is exactly the case worth seeing.
+      await q
+        .logEvent({
+          requestId,
+          actor,
+          stage: stage === 'revision' ? 'revision' : (stage as PipelineStage),
+          step: 'stage_starting',
+          ok: true,
+          detail: { elapsed_s: Math.round(elapsed / 1000), stages_run: stagesRun },
+        })
+        .catch(() => {});
 
       const result =
         stage === 'revision'

@@ -1,7 +1,6 @@
 import 'server-only';
 import type { Channel } from '../schemas';
 import type { ChannelAssetRow } from '../db-schemas';
-import { manualPublisher } from './manual';
 import { newsletterPublisher } from './newsletter';
 import { xPublisher } from './x';
 import { linkedinPublisher } from './linkedin';

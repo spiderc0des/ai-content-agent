@@ -124,6 +124,47 @@ const client = new Anthropic({
   maxRetries: 1,
 });
 
+/**
+ * Research is allowed longer than everything else, and still not forever.
+ *
+ * Ten minutes — comfortably above what research should now take, and still
+ * a bound.
+ *
+ * The history is worth keeping, because both earlier values were wrong for
+ * opposite reasons. It was first 300s, to match the platform's function
+ * ceiling, which would have aborted a 657-second call that was working
+ * perfectly. Then 900s, to clear that observed maximum — but that maximum was
+ * itself the symptom: research was allowed 24 web fetches and took as long as
+ * the slowest of them.
+ *
+ * With the tool budgets cut (lib/research-depth.ts) research is sized to
+ * finish inside the platform limit, so this no longer has to accommodate a
+ * ten-minute call. What it still has to catch is a stream that never ends at
+ * all, which is the only thing a client-side deadline can catch: the ceiling
+ * itself is enforced by Vercel killing the function, and no value here
+ * changes that.
+ */
+const RESEARCH_DEADLINE_MS = 600_000;
+
+/**
+ * A hard deadline on a single call, as an abort signal rather than the
+ * client's `timeout`.
+ *
+ * The client timeout does NOT bound a streamed response. Proof from this
+ * system: a research call ran 276 seconds to completion under a 180-second
+ * client timeout, and another sat `running` for 303 seconds with no request
+ * id and no error until a watchdog killed the drive around it. `timeout`
+ * governs getting the response; once a stream is flowing it stops applying.
+ *
+ * An AbortSignal does apply, to streamed and unstreamed calls alike. Aborting
+ * surfaces as a thrown error, which withRetry turns into a typed stage
+ * failure — so the pipeline reports "this call did not answer" instead of
+ * holding a lock until something else notices.
+ */
+function deadline(ms: number = CALL_TIMEOUT_MS): { signal: AbortSignal } {
+  return { signal: AbortSignal.timeout(ms) };
+}
+
 export interface ClaudeResult<T> {
   ok: true;
   data: T;
@@ -165,6 +206,20 @@ interface Attempt<T> {
  * Retries only 429s (honouring retry-after) — never a 400, which means our
  * own request was malformed and retrying it changes nothing.
  */
+/**
+ * Was this call cut off by its own deadline?
+ *
+ * AbortSignal.timeout rejects with a DOMException named 'TimeoutError', and
+ * the SDK wraps a caller-supplied abort in APIUserAbortError. Both mean the
+ * same thing here — we gave up on it — and neither should be filed as an
+ * invalid response, which is a verdict about content.
+ */
+function isDeadlineAbort(err: unknown): boolean {
+  if (err instanceof Anthropic.APIUserAbortError) return true;
+  if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) return true;
+  return false;
+}
+
 async function withRetry<T>(
   effort: string,
   attempt: () => Promise<Attempt<T>>,
@@ -221,6 +276,29 @@ async function withRetry<T>(
       }
       if (err instanceof Anthropic.AuthenticationError) {
         return failure('api_error', 'The Anthropic API key is missing or invalid.', err, startedAt);
+      }
+      // The call ran past its deadline and was aborted.
+      //
+      // This is the failure that used to have no representation at all: a
+      // streamed call the client timeout does not bound simply never came
+      // back, the stage row sat on `running`, and the request held its lock
+      // until something else noticed. Retrying once is worth it — the cause is
+      // usually a slow web fetch inside the server tool loop rather than
+      // anything about the request — but it stops being free after that.
+      if (isDeadlineAbort(err)) {
+        if (n < maxAttempts) {
+          await new Promise((res) => setTimeout(res, 2 ** n * 1000));
+          continue;
+        }
+        return {
+          ok: false,
+          reason: 'api_error',
+          message:
+            'The call did not answer within its deadline and was abandoned. ' +
+            'This is usually a slow source the research tools were waiting on.',
+          requestId: null,
+          durationMs: Date.now() - startedAt,
+        };
       }
       // A dropped connection or a stream that ended mid-flight. These arrive
       // as a bare Error whose message is 'terminated' (undici's wording when a
@@ -331,7 +409,7 @@ export async function auditRequest(
       output_config: { effort: 'low', format: zodOutputFormat(RequestAuditSchema) },
       system: cachedSystem(AUDIT_PROMPT),
       messages: [{ role: 'user', content: intakeAsText(intake) }],
-    });
+    }, deadline());
     if (!res.parsed_output) throw new Error('the audit did not return parsable structured output');
     return {
       data: res.parsed_output,
@@ -466,7 +544,7 @@ export async function researchTopic(
           },
         ],
         messages,
-      });
+      }, deadline(RESEARCH_DEADLINE_MS));
       res = await stream.finalMessage();
       // finalMessage() does not carry _request_id; the stream exposes it.
       requestId = stream.request_id ?? requestId;
@@ -562,7 +640,7 @@ export async function digestSource(params: {
           ],
         },
       ],
-    });
+    }, deadline());
 
     const blocks = res.content.filter(
       (b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text',
@@ -613,7 +691,7 @@ export async function selectSources(params: {
           content: `THE CONTENT REQUEST\n${intakeAsText(params.intake)}\n\nTHE EXCERPTS\n\n${list}`,
         },
       ],
-    });
+    }, deadline());
     if (!res.parsed_output) throw new Error('selection did not return parsable structured output');
     return {
       data: res.parsed_output,
@@ -658,7 +736,7 @@ export async function planContent(params: {
             `SELECTED SOURCE EXCERPTS\n${excerptBlock(params.selected)}`,
         },
       ],
-    });
+    }, deadline());
     const plan = res.parsed_output;
     if (!plan) throw new Error('the plan did not return parsable structured output');
     // Checked here rather than in the schema so the message names the problem.
@@ -743,7 +821,7 @@ export async function generateArticle(params: {
             `SELECTED SOURCE EXCERPTS — the only evidence you have\n${excerptBlock(params.selected)}`,
         },
       ],
-    });
+    }, deadline());
     const res = await stream.finalMessage();
     if (!res.parsed_output) throw new Error('the draft did not return parsable structured output');
     if (!res.parsed_output.body_md.trim()) throw new Error('the draft returned an empty body');
@@ -799,7 +877,7 @@ export async function evaluateArticle(params: {
             `weigh these findings in seo_fit)\n${params.seoFindings}`,
         },
       ],
-    });
+    }, deadline());
     const evaluation = res.parsed_output;
     if (!evaluation) throw new Error('the evaluation did not return parsable structured output');
 
@@ -857,7 +935,7 @@ export async function reviseArticle(params: {
             `SELECTED SOURCE EXCERPTS — the only evidence you have\n${excerptBlock(params.selected)}`,
         },
       ],
-    });
+    }, deadline());
     const res = await stream.finalMessage();
     if (!res.parsed_output) throw new Error('the revision did not return parsable structured output');
     if (!res.parsed_output.body_md.trim()) throw new Error('the revision returned an empty body');
@@ -914,7 +992,7 @@ export async function packageForChannel(params: {
               : ''),
         },
       ],
-    });
+    }, deadline());
     if (!res.parsed_output) {
       throw new Error(`the ${params.channel} asset did not return parsable structured output`);
     }

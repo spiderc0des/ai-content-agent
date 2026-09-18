@@ -29,13 +29,42 @@ describe('research depth profiles', () => {
     }
   });
 
-  it('keeps Standard as the current behaviour, so existing requests are unchanged', () => {
-    const s = depthProfile('standard');
-    expect(s.maxSearches).toBe(8);
-    expect(s.maxFetches).toBe(16);
-    expect(s.minReadable).toBe(7);
-    expect(s.maxRounds).toBe(3);
-    expect(s.maxSources).toBe(12);
+  it('is sized to fit inside the platform function limit', () => {
+    // Research is the ONLY stage that can outlast a 300-second function, and
+    // the one failure no machinery recovers from: slicing happens BETWEEN
+    // stages, so it cannot help a single stage that is too long. A killed
+    // research call loses every page it fetched and starts again from nothing.
+    //
+    // Measured before these budgets were cut: standard reached 657s and quick
+    // reached 290s, against a 300s limit. Time tracks fetches, because each
+    // fetch is a real HTTP request to a real website.
+    //
+    // These ceilings are what the measurements support. Raising them is a
+    // decision to make the slowest runs unable to finish in production.
+    const CEILINGS = {
+      quick: { maxFetches: 5, maxSearches: 3, maxSources: 5 },
+      standard: { maxFetches: 9, maxSearches: 5, maxSources: 8 },
+      deep: { maxFetches: 14, maxSearches: 8, maxSources: 12 },
+    } as const;
+
+    for (const [depth, caps] of Object.entries(CEILINGS)) {
+      const p = depthProfile(depth);
+      for (const [key, cap] of Object.entries(caps)) {
+        expect(p[key as keyof typeof caps], `${depth}.${key}`).toBeLessThanOrEqual(cap);
+      }
+    }
+  });
+
+  it('does not let a smaller budget cost more through extra rounds', () => {
+    // Cutting fetches without cutting minReadable is self-defeating: research
+    // comes back short, goes round again, and a whole extra call costs more
+    // than the fetches saved. The floor has to stay reachable inside one
+    // round's fetch budget.
+    for (const d of RESEARCH_DEPTHS) {
+      const p = depthProfile(d);
+      expect(p.minReadable, d).toBeLessThan(p.maxFetches);
+      expect(p.maxRounds, d).toBeLessThanOrEqual(2);
+    }
   });
 
   it('bounds the brief well inside the output ceiling', () => {

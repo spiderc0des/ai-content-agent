@@ -26,6 +26,32 @@
  *
  * Hence three profiles rather than one dial: the knobs only make sense moved
  * together.
+ *
+ * ── THE HARD CONSTRAINT ────────────────────────────────────────────────────
+ *
+ * Research is the ONLY stage in the pipeline that can outlast the platform's
+ * function limit, and that makes it the only one that can fail in a way no
+ * amount of machinery recovers from. Slicing a run into hand-offs happens
+ * BETWEEN stages; it cannot help a single stage that is too long. A 657-second
+ * research call simply cannot complete on a 300-second function — it is killed
+ * mid-flight, every page it fetched is lost, and the stage starts again from
+ * nothing.
+ *
+ * Measured against that limit before these budgets were cut:
+ *
+ *   standard (13 sources)   218s · 227s · 239s · 533s · 657s
+ *   quick     (7-9 sources) 248s · 276s · 290s
+ *
+ * Standard exceeded it outright and quick was arriving within ten seconds of
+ * it. So the budgets below are sized for the ceiling rather than for the
+ * evidence base anyone would prefer: fetches roughly halved, because each one
+ * is a real HTTP request to a real website and that is where the seconds go,
+ * and minReadable cut with them so a smaller budget does not simply trigger
+ * another round and cost more than it saved.
+ *
+ * The cost is honest and worth stating: fewer sources per article. The
+ * alternative was a depth that works on a laptop and not in production, which
+ * is not a depth setting, it is a trap.
  */
 
 export type ResearchDepth = 'quick' | 'standard' | 'deep';
@@ -106,13 +132,13 @@ export interface DepthProfile {
 
 const PROFILES: Record<ResearchDepth, DepthProfile> = {
   quick: {
-    maxSearches: 4,
-    maxFetches: 8,
-    minReadable: 3,
+    maxSearches: 3,
+    maxFetches: 5,
+    minReadable: 2,
     // One round. A top-up is a whole extra research call, which is the single
     // most expensive thing this pipeline can decide to do.
     maxRounds: 1,
-    maxSources: 6,
+    maxSources: 5,
     briefWords: 400,
     maxOutputTokens: 8000,
     maxContentTokens: 4000,
@@ -123,11 +149,11 @@ const PROFILES: Record<ResearchDepth, DepthProfile> = {
     hint: 'One search pass, up to 6 sources, a short brief, and every stage capped at medium effort. Fastest and cheapest; a narrower evidence base.',
   },
   standard: {
-    maxSearches: 8,
-    maxFetches: 16,
-    minReadable: 7,
-    maxRounds: 3,
-    maxSources: 12,
+    maxSearches: 5,
+    maxFetches: 9,
+    minReadable: 4,
+    maxRounds: 2,
+    maxSources: 8,
     briefWords: 900,
     maxOutputTokens: 16000,
     maxContentTokens: 8000,
@@ -138,11 +164,11 @@ const PROFILES: Record<ResearchDepth, DepthProfile> = {
     hint: 'Searches again if too few sources can be read. Up to 12 sources.',
   },
   deep: {
-    maxSearches: 12,
-    maxFetches: 24,
-    minReadable: 10,
-    maxRounds: 3,
-    maxSources: 18,
+    maxSearches: 8,
+    maxFetches: 14,
+    minReadable: 6,
+    maxRounds: 2,
+    maxSources: 12,
     briefWords: 1600,
     maxOutputTokens: 24000,
     maxContentTokens: 12000,

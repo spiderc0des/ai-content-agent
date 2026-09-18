@@ -682,4 +682,4 @@ async function main() {
   process.exit(failed === 0 ? 0 : 1);
 }
 
-main();
+void main();

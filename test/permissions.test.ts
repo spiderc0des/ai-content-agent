@@ -292,7 +292,7 @@ describe('the driver progress guard', () => {
   it('resets the count when the status moves, even on the same stage', () => {
     // evaluation → revising → evaluation is the normal revision loop: the same
     // stage recurs, but the status changes between, so it must not trip.
-    let state = { lastStage: 'evaluation', lastStatus: 'evaluating', repeats: 1 };
+    const state = { lastStage: 'evaluation', lastStatus: 'evaluating', repeats: 1 };
     const moved = step('evaluation', 'revising', state);
     expect(moved.stop).toBe(false);
     expect(moved.repeats).toBe(0);

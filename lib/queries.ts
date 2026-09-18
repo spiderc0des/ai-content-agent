@@ -413,6 +413,22 @@ export async function startStageRun(requestId: string, stage: PipelineStage) {
  *
  * Returns what it reaped, so the caller can log it rather than fix it quietly.
  */
+/**
+ * Is a stage actually in flight for this request?
+ *
+ * The one signal that separates a slow stage from a wedged driver. Research
+ * has been measured completing successfully at 657 seconds; a driver that has
+ * hung has no stage row at all, because runStage writes the row before it
+ * makes the call. Elapsed time alone cannot tell those apart, and guessing
+ * wrong in one direction abandons work that was about to finish.
+ */
+export async function hasRunningStage(requestId: string): Promise<boolean> {
+  const rows = await sql`
+    select 1 from stage_runs
+    where request_id = ${requestId} and status = 'running' limit 1`;
+  return rows.length > 0;
+}
+
 export async function reapStaleStageRuns(requestId: string, olderThan = '15 minutes') {
   const rows = await sql`
     update stage_runs
@@ -1954,7 +1970,7 @@ export async function countRequestsWithUsage(): Promise<number> {
  */
 export async function resetRequest(
   id: string,
-  actor: string,
+  _actor: string,
 ): Promise<{ request: ContentRequestRow; deleted: Record<string, number> }> {
   const current = await getRequest(id);
   if (!current) throw new ConflictError('That request no longer exists.');
