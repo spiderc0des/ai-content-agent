@@ -59,10 +59,35 @@ function report(checks: RuleCheck[], words: number): RuleReport {
   return { pass: checks.every((c) => !c.required || c.pass), checks, word_count: words };
 }
 
+/**
+ * Is this paragraph a dense block a reader would skip?
+ *
+ * The brief says only "keep paragraphs short". The 3-sentence ceiling that
+ * used to be the whole test was mine, borrowed from the SEO document's advice
+ * about ARTICLE paragraphs — and on LinkedIn it measured the wrong thing.
+ *
+ * It failed this, which is twelve words and the punchiest possible opener:
+ *
+ *   "It's 4pm Thursday. Cursor blinking. Coffee cold. You've got nothing
+ *    to post."
+ *
+ * while passing a two-sentence block of forty-five. Sentence count is not
+ * density; staccato fragments are a LinkedIn house style, not a wall of text.
+ * "Short" on a phone is about how many lines a block occupies, so a paragraph
+ * has to be long BOTH ways before it counts as one — several sentences AND
+ * enough words to actually fill the screen.
+ */
+const DENSE_SENTENCES = 3;
+const DENSE_WORDS = 45;
+
+export function isLongParagraph(p: string): boolean {
+  return sentenceCount(p) > DENSE_SENTENCES && wordCount(p) > DENSE_WORDS;
+}
+
 export function checkLinkedIn(post: LinkedInPost): RuleReport {
   const body = post.body ?? '';
   const paras = paragraphs(body);
-  const longParas = paras.filter((p) => sentenceCount(p) > 3);
+  const longParas = paras.filter(isLongParagraph);
   const emoji = countEmoji(body);
   const hasBullets = /^\s*([-+*•→▸✅]|\d+[.)])\s+/m.test(body);
 
@@ -91,8 +116,8 @@ export function checkLinkedIn(post: LinkedInPost): RuleReport {
       pass: longParas.length === 0,
       detail:
         longParas.length === 0
-          ? `all ${paras.length} paragraphs are 3 sentences or fewer`
-          : `${longParas.length} paragraph(s) run longer than 3 sentences`,
+          ? `all ${paras.length} paragraphs are short`
+          : `${longParas.length} of ${paras.length} paragraphs are dense blocks`,
       required: true,
     },
     {
@@ -309,6 +334,19 @@ export function failureInstructions(channel: Channel, r: RuleReport, body: strin
           `turn each one into a bold lead-in on the first sentence of its paragraph instead: ` +
           `"## The Reality Check" becomes "**The reality check.**" at the start of the ` +
           `paragraph that followed it. A newsletter is a letter, not an article.`
+        );
+      }
+      if (c.key === 'short_paragraphs') {
+        // Naming the count and not the paragraphs is what made this rule
+        // unfixable. "2 paragraph(s) run longer than 3 sentences. Fix this."
+        // asks a model that cannot count sentences — the reason these rules
+        // are computed in code at all — to find two blocks among eight. It
+        // rewrote the wrong ones and failed again, twice over. So quote them.
+        const guilty = paragraphs(body).filter(isLongParagraph);
+        return (
+          `These paragraphs are dense blocks. Split each one into shorter ` +
+          `paragraphs, separated by a blank line. Change nothing else:\n` +
+          guilty.map((g) => `  → "${g.replace(/\s+/g, ' ').slice(0, 200)}"`).join('\n')
         );
       }
       return `${c.label} — ${c.detail}. Fix this.`;
