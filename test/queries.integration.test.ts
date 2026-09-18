@@ -1,5 +1,13 @@
 import postgres from 'postgres';
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
+
+/**
+ * Every test here makes several round trips to a database in another region,
+ * and vitest's 5-second default is too tight for that — these have failed on
+ * latency alone, reporting a slow network as a broken query. A generous
+ * ceiling costs a passing run nothing.
+ */
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 
 /**
  * A real-database regression test — the one kind a unit test cannot be.

@@ -15,6 +15,7 @@ import {
   getLatestAssets,
   getPublications,
   listEmailGroups,
+  articleViewStats,
   getReviews,
   getStageRuns,
   lockIsLive,
@@ -69,6 +70,10 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
     getStageRuns(id),
     listEmailGroups(),
   ]);
+
+  // Readership, for anyone who can already see the request. requireUser above
+  // means that is a creator or better; there is no lower tier to hide it from.
+  const views = request.public_token ? await articleViewStats(id) : null;
   // Archived groups are excluded above, but one already attached to a queued
   // publication still has to be nameable — otherwise a scheduled newsletter
   // shows a blank where its recipient list should be.
@@ -171,6 +176,14 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
       wordCountTarget: request.word_count_target,
       optionCount: request.option_count,
       researchDepth: request.research_depth,
+      publicToken: request.public_token,
+      views: views
+        ? {
+            total: views.total,
+            last7: views.last7,
+            lastViewedAt: views.lastViewedAt?.toISOString() ?? null,
+          }
+        : null,
       deadlineAt: request.deadline_at?.toISOString() ?? null,
       createdAt: request.created_at.toISOString(),
       readiness: request.readiness,

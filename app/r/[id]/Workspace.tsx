@@ -48,6 +48,8 @@ export interface WorkspaceData {
     wordCountTarget: number | null;
     optionCount: number;
     researchDepth: string;
+    publicToken: string | null;
+    views: { total: number; last7: number; lastViewedAt: string | null } | null;
     deadlineAt: string | null;
     createdAt: string;
     readiness: string | null;
@@ -678,6 +680,35 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
           {' · request updated '}
           {relativeTime(request.updatedAt)}
         </p>
+
+        {/* Readership. Only exists once the article has a public page, which
+            is minted at first publish — so its absence is meaningful rather
+            than an empty state to explain. */}
+        {request.publicToken && request.views && (
+          <div className="mt-4 rounded-lg border p-3" style={{ borderColor: 'var(--rule)' }}>
+            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
+              <span className="font-medium">
+                {request.views.total} reader{request.views.total === 1 ? '' : 's'}
+              </span>
+              <span style={{ color: 'var(--ink-faint)' }}>
+                {request.views.last7} in the last 7 days
+                {request.views.lastViewedAt &&
+                  ` · last ${relativeTime(request.views.lastViewedAt)}`}
+              </span>
+              <a
+                className="ml-auto text-sm"
+                href={`/read/${request.publicToken}`}
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                Open the public page
+              </a>
+            </div>
+            <p className="mt-1 text-xs" style={{ color: 'var(--ink-faint)' }}>
+              Counted once per reader per day, not per refresh.
+            </p>
+          </div>
+        )}
 
         {request.status === 'blocked' && (
           <div className="panel panel-warning mt-4">

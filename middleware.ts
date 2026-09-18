@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
-import { VERIFIED_USER_ID_HEADER, VERIFIED_USER_EMAIL_HEADER } from './lib/verified-identity';
+import { VERIFIED_USER_ID_HEADER, VERIFIED_USER_EMAIL_HEADER,
+  PATHNAME_HEADER,
+} from './lib/verified-identity';
 
 /**
  * Refresh the Supabase session on every request, and hand the result
@@ -53,6 +55,9 @@ export async function middleware(request: NextRequest) {
   const {
     data: { user },
   } = await supabase.auth.getUser();
+
+  // So the root layout can tell a reader page from an app page.
+  request.headers.set(PATHNAME_HEADER, request.nextUrl.pathname);
 
   if (user?.email) {
     request.headers.set(VERIFIED_USER_ID_HEADER, user.id);

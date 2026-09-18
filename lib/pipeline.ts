@@ -265,12 +265,15 @@ async function researchWithTopUp(
 
   for (let round = 1; round <= depth.maxRounds; round++) {
     const before = readableCount(merged());
-    const outcome = await claude.researchTopic(
-      intakeOf(request),
-      depth.maxSearches,
-      depth.maxFetches,
-      round === 1 ? [] : roundFindings.flat().map((f) => f.url),
-    );
+    const outcome = await claude.researchTopic(intakeOf(request), {
+      maxSearches: depth.maxSearches,
+      maxFetches: depth.maxFetches,
+      maxContentTokens: depth.maxContentTokens,
+      briefWords: depth.briefWords,
+      maxOutputTokens: depth.maxOutputTokens,
+      maxContinuations: depth.maxContinuations,
+      alreadyTried: round === 1 ? [] : roundFindings.flat().map((f) => f.url),
+    });
 
     if (!outcome.ok) {
       // The FIRST round failing is a real research failure. A top-up failing
@@ -1385,7 +1388,43 @@ const MAX_STAGES_PER_RUN = 24;
  * check happens BEFORE starting a stage, and the slowest one (research)
  * averages about 220 seconds.
  */
-const RUN_BUDGET_MS = Number(process.env.PIPELINE_RUN_BUDGET_MS ?? 240_000);
+export const RUN_BUDGET_MS = Number(process.env.PIPELINE_RUN_BUDGET_MS ?? 240_000);
+
+/**
+ * How long each stage usually takes, in milliseconds.
+ *
+ * Measured from this system's own `stage_runs` — averages over real runs,
+ * rounded up, because the point of a reserve is to be pessimistic:
+ *
+ *   research 244s · revision 165s · generation 99s · selection 92s
+ *   evaluation 89s · retrieval 80s · packaging 58s · planning 48s · audit 8s
+ *
+ * These exist because the budget check used to ask the wrong question. It
+ * asked "have I run over?" and not "do I have room for what comes next", so a
+ * run that had used 236 of its 240 seconds happily started a 92-second stage.
+ * The platform killed the function mid-call, which left the stage row saying
+ * `running` forever, the lock held, and no hand-off made — the driver never
+ * reached the line that hands off, because it was not running any more.
+ *
+ * Stopping one stage early costs one extra hop. Being killed mid-stage costs
+ * the stage's work, the lock, and the chain.
+ */
+export const STAGE_RESERVE_MS: Record<string, number> = {
+  audit: 30_000,
+  research: 300_000,
+  retrieval: 120_000,
+  selection: 120_000,
+  planning: 90_000,
+  generation: 150_000,
+  evaluation: 150_000,
+  revision: 200_000,
+  packaging: 90_000,
+};
+
+/** The reserve for a stage, defaulting to the slowest, for an unknown one. */
+export function reserveFor(stage: string): number {
+  return STAGE_RESERVE_MS[stage] ?? 300_000;
+}
 
 /** Statuses the driver stops at because only a person can move them on. */
 const WAITS_FOR_A_HUMAN = new Set(['awaiting_review', 'rejected', 'blocked']);
@@ -1414,6 +1453,26 @@ export interface DriveResult {
  */
 export async function drivePipeline(requestId: string, actor: string): Promise<DriveResult> {
   const startedAt = Date.now();
+
+  // Clean up after a driver that did not come back. A process killed mid-stage
+  // never records an outcome, so its row keeps saying `running` and the
+  // pipeline view keeps reporting work that stopped long ago. Doing this here
+  // rather than at each claimPipelineLock site means every path that drives —
+  // start, continue, review, cron — gets it, including ones added later.
+  const reaped = await q.reapStaleStageRuns(requestId).catch(() => []);
+  for (const r of reaped) {
+    await q
+      .logEvent({
+        requestId,
+        actor,
+        stage: r.stage as PipelineStage,
+        step: 'stage_run_abandoned',
+        ok: false,
+        detail: { attempt: r.attempt, note: 'no outcome recorded; the driver did not return' },
+      })
+      .catch(() => {});
+  }
+
   let stagesRun = 0;
   let finalStatus = 'unknown';
   // Guards against a stage that keeps being chosen but never changes the
@@ -1453,20 +1512,6 @@ export async function drivePipeline(requestId: string, actor: string): Promise<D
         };
       }
 
-      // Out of time — stop between stages rather than be killed inside one.
-      // The lock is released in the finally block below, so the resume worker
-      // sees an unowned request in a machine status and carries on from here.
-      if (stagesRun > 0 && Date.now() - startedAt > RUN_BUDGET_MS) {
-        return {
-          stagesRun,
-          finalStatus,
-          stoppedBecause: 'out_of_time',
-          message:
-            `Ran ${stagesRun} stage${stagesRun === 1 ? '' : 's'} and stopped at the time limit. ` +
-            'The next scheduled run picks this up where it left off.',
-        };
-      }
-
       const stage = nextStage(request);
       if (!stage) {
         return {
@@ -1474,6 +1519,30 @@ export async function drivePipeline(requestId: string, actor: string): Promise<D
           finalStatus,
           stoppedBecause: 'finished',
           message: `Nothing left to run from '${request.status}'.`,
+        };
+      }
+
+      // Out of time — stop between stages rather than be killed inside one.
+      //
+      // The question is "is there room for THIS stage", not "have I run over".
+      // Asking the second one let a run that had spent 236 of 240 seconds
+      // start a 92-second selection stage; the function died mid-call, leaving
+      // a stage row stuck at `running`, the lock held, and no hand-off made.
+      // The check has to know which stage is next, which is why it sits after
+      // nextStage() rather than before it.
+      //
+      // The lock is released in the finally block below, and the caller hands
+      // off on 'out_of_time', so the next slice carries on from here.
+      const elapsed = Date.now() - startedAt;
+      if (stagesRun > 0 && elapsed + reserveFor(stage) > RUN_BUDGET_MS) {
+        return {
+          stagesRun,
+          finalStatus,
+          stoppedBecause: 'out_of_time',
+          message:
+            `Ran ${stagesRun} stage${stagesRun === 1 ? '' : 's'} in ${Math.round(elapsed / 1000)}s ` +
+            `and stopped rather than start '${stage}' without time to finish it. ` +
+            'The run continues in the next slice.',
         };
       }
 

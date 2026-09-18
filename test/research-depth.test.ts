@@ -10,7 +10,20 @@ import { depthProfile, RESEARCH_DEPTHS, relativeCost } from '../lib/research-dep
 describe('research depth profiles', () => {
   it('gets strictly more expensive in one direction', () => {
     const [quick, standard, deep] = RESEARCH_DEPTHS.map(depthProfile);
-    for (const key of ['maxSearches', 'maxFetches', 'maxSources', 'minReadable'] as const) {
+    const keys = [
+      'maxSearches',
+      'maxFetches',
+      'maxSources',
+      'minReadable',
+      // The time knobs. These were added after a 'quick' run took fourteen
+      // minutes: the source budgets had been halved but the brief had not, and
+      // the brief is what the wall clock is actually spent on. If a future
+      // edit moves the source knobs without moving these, this fails.
+      'briefWords',
+      'maxOutputTokens',
+      'maxContentTokens',
+    ] as const;
+    for (const key of keys) {
       expect(quick![key], key).toBeLessThan(standard![key]);
       expect(standard![key], key).toBeLessThan(deep![key]);
     }
@@ -23,6 +36,33 @@ describe('research depth profiles', () => {
     expect(s.minReadable).toBe(7);
     expect(s.maxRounds).toBe(3);
     expect(s.maxSources).toBe(12);
+  });
+
+  it('bounds the brief well inside the output ceiling', () => {
+    // Hitting max_tokens is a stage FAILURE, not a truncation — withRetry
+    // treats it as one. So the ceiling has to leave room for the brief plus
+    // however much adaptive thinking the model decides to do on top. Four
+    // tokens per word is generous for prose; the rest is thinking headroom.
+    for (const d of RESEARCH_DEPTHS) {
+      const p = depthProfile(d);
+      expect(p.maxOutputTokens, d).toBeGreaterThan(p.briefWords * 4 * 2);
+    }
+  });
+
+  it('gives Quick a brief it can write quickly', () => {
+    // Measured: the research call returned 8,000–21,000 output tokens and took
+    // 149–533 seconds, against 600–2,000 input tokens. Generation is the wall
+    // clock. A quick depth has to bound what gets written, not just what gets
+    // read.
+    const q = depthProfile('quick');
+    expect(q.briefWords).toBeLessThanOrEqual(500);
+    expect(q.maxContinuations).toBe(1);
+  });
+
+  it('tells the person picking a depth roughly what they are waiting for', () => {
+    for (const d of RESEARCH_DEPTHS) {
+      expect(depthProfile(d).pace, d).toMatch(/minutes/);
+    }
   });
 
   it('gives Quick a single round', () => {

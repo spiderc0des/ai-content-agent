@@ -61,6 +61,7 @@ export function newsletterPublisher(): Publisher {
         preheader: asset.preheader || (asset.subject ?? ''),
         recipients: target.recipients,
         groupName: target.groupName ?? 'Koya Talent',
+        readUrl: target.readUrl,
       });
 
       if (!result.sent) {

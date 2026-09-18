@@ -54,6 +54,15 @@ export interface PublishTarget {
   groupName?: string | null;
   /** X and LinkedIn only — accounts to mention in the post. */
   tagHandles: string[];
+  /**
+   * Where a reader can read the article itself.
+   *
+   * The same URL for every channel of a request, so a view arriving from the
+   * newsletter and one from the X post are counted against the same piece.
+   * Null when the request has no approved version, which is also when it has
+   * no public page.
+   */
+  readUrl?: string | null;
 }
 
 export interface Publisher {

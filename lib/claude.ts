@@ -70,7 +70,32 @@ const MODEL = 'claude-sonnet-5';
  */
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 
-const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+/**
+ * How long one call may take before it is abandoned.
+ *
+ * The SDK's default is TEN MINUTES, and it retries timeouts by default
+ * (maxRetries: 2), so a single hung request can occupy ~30 minutes. That is
+ * not a hypothetical: a selection call sat in `running` for 17 minutes with no
+ * request id, no tokens and no error, holding the pipeline lock, while the
+ * platform's own function limit is 300 seconds. The stage outlived by minutes
+ * the process that was supposed to be running it.
+ *
+ * A call that has not answered in three minutes is not going to produce
+ * something worth the wait — the slowest single call measured here is well
+ * under that, and a stage's own duration is the sum of several. Timing out
+ * turns a silent hang into a typed failure the run can report and retry.
+ *
+ * maxRetries drops to 1 for the same reason: the worst case has to stay
+ * bounded. withRetry above owns the retry that actually matters (429 with
+ * retry-after); the SDK's remaining attempt covers transient network and 5xx.
+ */
+const CALL_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS ?? 180_000);
+
+const client = new Anthropic({
+  apiKey: env.ANTHROPIC_API_KEY,
+  timeout: CALL_TIMEOUT_MS,
+  maxRetries: 1,
+});
 
 export interface ClaudeResult<T> {
   ok: true;
@@ -309,30 +334,61 @@ export interface ResearchResult {
 }
 
 /**
- * The server runs its own sampling loop for these tools and stops at 10
- * iterations with `stop_reason: 'pause_turn'`. Resuming is just re-sending
- * the conversation with the paused assistant turn appended — no extra user
- * message, which would confuse the resume.
+ * What the depth profile controls about this one call.
+ *
+ * An options object rather than more positional arguments: there are now six
+ * of them, they all come from the same place (lib/research-depth.ts), and a
+ * call site passing three numbers in the wrong order would be silently wrong
+ * rather than a type error.
  */
-const MAX_CONTINUATIONS = 4;
-
-export async function researchTopic(
-  intake: Partial<Intake>,
-  maxSearches = 8,
-  // Fetching gets its own, larger budget than searching. The two used to
-  // share one number, which meant a topic whose first eight candidates all
-  // blocked the fetcher had no attempts left to go and find readable ones —
-  // and that is exactly the case the budget needs to survive, because it is
-  // routine: academic publishers and big aggregators block by default.
-  maxFetches = 16,
+export interface ResearchBudget {
+  maxSearches: number;
+  /**
+   * Fetching gets its own, larger budget than searching. The two used to
+   * share one number, which meant a topic whose first candidates all blocked
+   * the fetcher had no attempts left to go and find readable ones — and that
+   * is exactly the case the budget needs to survive, because it is routine:
+   * academic publishers and big aggregators block by default.
+   */
+  maxFetches: number;
+  /** Page text admitted per fetch. Caps what one very long page can cost. */
+  maxContentTokens: number;
+  /** Target length of the brief — the main control on how long this takes. */
+  briefWords: number;
+  /** Output ceiling, thinking included. A backstop; briefWords is the control. */
+  maxOutputTokens: number;
+  /**
+   * The server runs its own sampling loop for these tools and stops at 10
+   * iterations with `stop_reason: 'pause_turn'`. Resuming is just re-sending
+   * the conversation with the paused assistant turn appended — no extra user
+   * message, which would confuse the resume. Each resume re-sends every
+   * search result and fetched page so far, so late resumes are the dearest
+   * turns in the call.
+   */
+  maxContinuations: number;
   /**
    * URLs an earlier round already tried. Passed on a top-up round, when the
    * first pass came back with too few READABLE sources: the model is told
    * what it has already been given so it goes looking somewhere else instead
    * of returning the same blocked publishers a second time.
    */
-  alreadyTried: string[] = [],
+  alreadyTried?: string[];
+}
+
+export async function researchTopic(
+  intake: Partial<Intake>,
+  budget: ResearchBudget,
 ): Promise<ClaudeOutcome<ResearchResult>> {
+  const {
+    maxSearches,
+    maxFetches,
+    maxContentTokens,
+    briefWords,
+    maxOutputTokens,
+    maxContinuations,
+    alreadyTried = [],
+  } = budget;
+
   if (mockClaude) return mock.mockResearch(intake);
 
   const topUp = alreadyTried.length
@@ -349,7 +405,7 @@ export async function researchTopic(
     const messages: Anthropic.Beta.BetaMessageParam[] = [
       {
         role: 'user',
-        content: `${researchPrompt()}\n\nTHE CONTENT REQUEST\n${intakeAsText(intake)}${topUp}`,
+        content: `${researchPrompt(briefWords, minFetchedFor(maxFetches))}\n\nTHE CONTENT REQUEST\n${intakeAsText(intake)}${topUp}`,
       },
     ];
 
@@ -357,10 +413,10 @@ export async function researchTopic(
     let requestId: string | null = null;
     const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
 
-    for (let turn = 0; turn <= MAX_CONTINUATIONS; turn++) {
+    for (let turn = 0; turn <= maxContinuations; turn++) {
       const stream = client.beta.messages.stream({
         model: MODEL,
-        max_tokens: 16000,
+        max_tokens: maxOutputTokens,
         betas: [FALLBACK_BETA],
         fallbacks: 'default',
         thinking: { type: 'adaptive' },
@@ -375,7 +431,12 @@ export async function researchTopic(
         ),
         tools: [
           { type: 'web_search_20260209', name: 'web_search', max_uses: maxSearches },
-          { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: maxFetches },
+          {
+            type: 'web_fetch_20260209',
+            name: 'web_fetch',
+            max_uses: maxFetches,
+            max_content_tokens: maxContentTokens,
+          },
         ],
         messages,
       });
@@ -406,6 +467,18 @@ export async function researchTopic(
       ...usage,
     };
   });
+}
+
+/**
+ * How many successful fetches to ask for, from the fetch budget.
+ *
+ * Half, floored at two. Asking for four out of a budget of eight is a real
+ * target; asking for four out of a budget of eight on a topic whose sources
+ * all block is an instruction the model cannot satisfy, and it burns the
+ * whole budget trying.
+ */
+function minFetchedFor(maxFetches: number): number {
+  return Math.max(2, Math.floor(maxFetches / 2));
 }
 
 function textOf(res: Anthropic.Beta.BetaMessage): string {

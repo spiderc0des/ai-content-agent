@@ -7,7 +7,9 @@ import {
   recordRecipients,
   getEmailGroup,
   logEvent,
+  ensurePublicToken,
 } from './queries';
+import { env } from './env';
 import { publisherFor } from './publishers';
 import type { PublicationRow } from './db-schemas';
 
@@ -55,10 +57,18 @@ export async function releasePublication(
       ? await getEmailGroup(publication.email_group_id)
       : null;
 
+    // Minted here rather than at approval, so a request that is never
+    // published never gets a public address at all. Idempotent: the same
+    // token comes back for every channel of the same request, which is what
+    // makes one link work across the newsletter, the post and the tweet.
+    const token = await ensurePublicToken(publication.request_id).catch(() => null);
+    const readUrl = token ? `${env.APP_URL.replace(/\/$/, '')}/read/${token}` : null;
+
     const result = await publisher.publish(asset, {
       recipients,
       groupName: group?.name ?? null,
       tagHandles: publication.tag_handles,
+      readUrl,
     });
 
     if (result.ok) {

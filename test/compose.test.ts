@@ -143,3 +143,64 @@ describe('xLength — counting the way X counts', () => {
     expect(composeXPost(post, []).ok).toBe(true);
   });
 });
+
+/**
+ * The read link is the part of a social post that cannot be dropped — a post
+ * without somewhere to read the thing is worth much less. On X it also costs
+ * 23 characters whatever its length, so the budget has to know about it.
+ */
+describe('the read link', () => {
+  // Shaped like a real one — the deployed origin plus a 22-character token.
+  // Length matters to these tests: the whole point of counting a URL as 23 is
+  // that real read links are much longer than that.
+  const READ = 'https://koya-content-agent.vercel.app/read/hjrBqPchyoN9bw3toHmfUg';
+
+  it('introduces the link with a label, since a post body cannot hide a URL behind words', () => {
+    // X and LinkedIn are plain text and auto-link a bare URL — there is no
+    // anchor text to put "Read the full article" into, so it goes in front.
+    const r = composeXPost('A short hook.', [], READ);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.text).toContain(`Read the full article: ${READ}`);
+  });
+
+  it('counts the link as 23 characters, not its real length', () => {
+    // Counted naively this post is over the limit; counted the way X counts —
+    // the URL as 23 whatever its length — it fits. Naive counting would refuse
+    // a post X would have accepted, and every post now carries a read link.
+    const body = 'y'.repeat(220);
+    const r = composeXPost(body, [], READ);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.text.length).toBeGreaterThan(280);
+    expect(xLength(r.text)).toBeLessThanOrEqual(280);
+  });
+
+  it('refuses when the link pushes the post over', () => {
+    const r = composeXPost('z'.repeat(270), [], READ);
+    expect(r.ok).toBe(false);
+  });
+
+  it('puts the link before the tags, so the copy then the link then mentions', () => {
+    const r = composeXPost('Hook.', ['@koyatalent'], READ);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.text.indexOf(READ)).toBeLessThan(r.text.indexOf('@koyatalent'));
+  });
+
+  it('does not add the link twice if the copy already has it', () => {
+    const r = composeXPost(`Read it: ${READ}`, [], READ);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.text.split(READ).length - 1).toBe(1);
+  });
+
+  it('adds it to LinkedIn without imposing X’s limit', () => {
+    const r = composeLinkedInPost('x'.repeat(1500), ['@koya-talent'], READ);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.text).toContain(`Read the full article: ${READ}`);
+    expect(r.text.indexOf(READ)).toBeLessThan(r.text.indexOf('@koya-talent'));
+  });
+
+  it('is optional — nothing changes when there is no link', () => {
+    const r = composeXPost('Hook.', ['@koyatalent']);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.text).toBe('Hook.\n\n@koyatalent');
+  });
+});

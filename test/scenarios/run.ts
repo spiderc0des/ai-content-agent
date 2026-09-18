@@ -55,7 +55,11 @@ function scenario(n: number, name: string, covers: string, body: (t: Tester) => 
         checks.push({
           label,
           pass,
-          detail: pass ? String(actual) : `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
+          // String(anObject) is "[object Object]", which told a reader of the
+          // evidence output nothing about what actually matched.
+          detail: pass
+            ? (typeof actual === 'object' && actual !== null ? JSON.stringify(actual) : String(actual))
+            : `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
         });
       },
     };
