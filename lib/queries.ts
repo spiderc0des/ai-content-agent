@@ -230,6 +230,7 @@ export interface NewRequest {
   word_count_target: number | null;
   channels_wanted: Channel[];
   option_count: number;
+  research_depth: 'quick' | 'standard' | 'deep';
   deadline_at: string | null;
   intake_hash: string;
   author_id: string;
@@ -240,13 +241,13 @@ export async function createRequest(r: NewRequest) {
     insert into content_requests (
       raw_idea, target_audience, source_url, supporting_notes, title_hint,
       primary_keyword, secondary_keywords, desired_tone, word_count_target,
-      channels_wanted, option_count, deadline_at, intake_hash, author_id
+      channels_wanted, option_count, research_depth, deadline_at, intake_hash, author_id
     ) values (
       ${r.raw_idea}, ${r.target_audience}, ${r.source_url}, ${r.supporting_notes},
       ${r.title_hint}, ${r.primary_keyword}, ${r.secondary_keywords as unknown as string[]},
       ${r.desired_tone}, ${r.word_count_target},
       ${r.channels_wanted as unknown as string[]}::channel[], ${r.option_count},
-      ${r.deadline_at}, ${r.intake_hash}, ${r.author_id}
+      ${r.research_depth}, ${r.deadline_at}, ${r.intake_hash}, ${r.author_id}
     ) returning *`;
   return ContentRequestRow.parse(rows[0]);
 }

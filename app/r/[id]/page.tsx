@@ -170,6 +170,7 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
       desiredTone: request.desired_tone,
       wordCountTarget: request.word_count_target,
       optionCount: request.option_count,
+      researchDepth: request.research_depth,
       deadlineAt: request.deadline_at?.toISOString() ?? null,
       createdAt: request.created_at.toISOString(),
       readiness: request.readiness,

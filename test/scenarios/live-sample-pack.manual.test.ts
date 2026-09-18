@@ -57,6 +57,7 @@ const INTAKE = {
   secondary_keywords: [] as string[],
   desired_tone: 'Direct, a little wry, no corporate voice',
   option_count: 2,
+  research_depth: 'standard' as const,
   channels_wanted: ['linkedin', 'x', 'newsletter'] as const,
 };
 
@@ -74,6 +75,7 @@ describe.skipIf(!RUN_LIVE)('live sample pack', () => {
       console.log('Creating the request…');
       let request = await q.createRequest({
         raw_idea: INTAKE.raw_idea,
+        research_depth: 'standard' as const,
         target_audience: INTAKE.target_audience,
         source_url: INTAKE.source_url,
         supporting_notes: INTAKE.supporting_notes,
