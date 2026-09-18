@@ -250,6 +250,57 @@ export async function sendNewsletter(params: {
  * the first thing an invited person meets is an access screen that reads as
  * the invite having failed.
  */
+/**
+ * Tell the reviewers there is something waiting for them.
+ *
+ * BCC, like the newsletter. The reviewer list is a staff list, and a To:
+ * header would put every reviewer's address in front of every other one and
+ * invite a reply-all onto a thread nobody meant to start.
+ *
+ * Deliberately says what the machine already decided — how many options, what
+ * the evaluator made of them — because the useful version of this email lets
+ * someone judge whether to open it now or after lunch.
+ */
+export async function sendReviewRequest(params: {
+  toEmails: string[];
+  title: string;
+  audience: string;
+  createdBy: string;
+  optionCount: number;
+  link: string;
+}): Promise<EmailOutcome> {
+  if (!params.toEmails.length) {
+    return { sent: false, skipped: true, reason: 'No active reviewers to notify.' };
+  }
+
+  const options = params.optionCount === 1 ? '1 option' : `${params.optionCount} options`;
+  const title = escapeHtml(params.title);
+  const by = escapeHtml(params.createdBy);
+  const audience = escapeHtml(params.audience);
+
+  return send(
+    { bcc: params.toEmails },
+    `Ready for review: ${params.title}`,
+    `A content request is waiting for a reviewer.\n\n` +
+      `${params.title}\n` +
+      `For ${params.audience}\n` +
+      `From ${params.createdBy} · ${options} written and scored\n\n` +
+      `Review it: ${params.link}\n\n` +
+      `Nothing publishes until somebody approves it.\n\n` +
+      `Koya Talent`,
+    emailShell({
+      title: 'Ready for review',
+      preheader: `${params.title} — ${options} waiting on a reviewer.`,
+      body:
+        para('A content request is waiting for a reviewer.') +
+        para(`<strong>${title}</strong><br/>For ${audience}<br/>From ${by} · ${options} written and scored`) +
+        button({ label: 'Review it', href: params.link }) +
+        para('Nothing publishes until somebody approves it.', true),
+      footnote: 'You are getting this because your account can review content.',
+    }),
+  );
+}
+
 export async function sendInvite(params: {
   toEmail: string;
   fullName: string;

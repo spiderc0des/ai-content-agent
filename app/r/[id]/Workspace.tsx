@@ -162,12 +162,19 @@ export interface WorkspaceData {
 /**
  * How often an open page asks the server where the run is.
  *
- * Two minutes, not seconds: the work it is watching takes ten to fifteen
- * minutes, so a tighter loop buys nothing except load. Progress still appears
- * promptly on any real change because the page also refreshes whenever the
- * status OR the version moves, and both move at every stage boundary.
+ * Five seconds. It was two minutes, on the reasoning that the work takes ten
+ * to fifteen minutes so a tighter loop buys nothing — which was wrong twice
+ * over. Stages finish in 40 to 200 seconds, so a two-minute poll could miss a
+ * whole stage and leave the page showing work that had already moved on; and
+ * a person watching a run wants to see it move, not wonder whether the tab is
+ * broken. Someone refreshing by hand to find out what is happening is the
+ * clearest possible signal that the interval is wrong.
+ *
+ * Cheap, too: the poll hits one small status endpoint, and only while a run is
+ * actually in flight — it stops the moment the pipeline reaches a person or
+ * finishes.
  */
-const POLL_INTERVAL_MS = 120_000;
+const POLL_INTERVAL_MS = 5_000;
 
 /**
  * How each source outcome reads to a person.
@@ -304,8 +311,8 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
           router.refresh();
         }
       } catch {
-        // A failed poll is not interesting: the next one is 3 seconds away,
-        // and the server is the one doing the work either way.
+        // A failed poll is not interesting: the next one is five seconds
+        // away, and the server is the one doing the work either way.
       }
     };
 

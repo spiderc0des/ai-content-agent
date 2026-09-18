@@ -14,15 +14,22 @@
 # Until both exist this workflow runs and exits without doing anything, so it
 # is safe to merge before you have set them.
 #
-# COST — GitHub bills a minimum of one minute per job. Every 30 minutes is
-# ~1,440 minutes a month, inside the 2,000 free minutes for a private repo.
-# Public repos are unlimited. Halve the interval only if you know you have the
-# allowance for it.
-name: Publishing queue
+# CADENCE — every five minutes, because this is not only the publishing queue
+# any more. Vercel refuses a deployment that invokes itself too deeply (it
+# answers hop 5 with a bare 508 Loop Detected), so a run can only hand off to
+# itself a few times before it has to stop and wait. /api/cron/resume is what
+# carries it on from there, and each tick starts a fresh chain from outside,
+# so the gap between ticks is the worst case a pipeline ever waits.
+#
+# COST — GitHub bills a minimum of one minute per job, so this is ~8,640
+# minutes a month. That is free ONLY because this repository is public, where
+# Actions minutes are unlimited. On a private repo the free allowance is 2,000
+# minutes a month and this cadence would bill: use */30 there instead.
+name: Publishing queue and pipeline resume
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/5 * * * *'
   # So you can prove it works without waiting for the next slot.
   workflow_dispatch:
 

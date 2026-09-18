@@ -9,6 +9,8 @@ import { groundClaims } from './grounding';
 import { assessSource } from './source-quality';
 import { nextAfterEvaluation, shouldStopRepeating } from './permissions';
 import { checkChannel, failureSummary, failureInstructions, type RuleReport } from './channel-rules';
+import { sendReviewRequest } from './email';
+import { env } from './env';
 import type { ContentRequestRow, PipelineStage } from './db-schemas';
 import type { Channel, Intake } from './schemas';
 import { CHANNELS } from './schemas';
@@ -941,6 +943,7 @@ export async function runEvaluation(request: ContentRequestRow): Promise<StageRe
       await q.startAutoRevision(request.id);
     } else {
       await q.advanceStatus(request.id, next, ['evaluating']);
+      await notifyReviewers(request.id);
     }
     await q.clearFailure(request.id);
 
@@ -1107,6 +1110,7 @@ export async function runRevision(
       });
       await q.advanceStatus(request.id, 'awaiting_review', ['revising']);
       await q.clearFailure(request.id);
+      await notifyReviewers(request.id);
 
       return {
         stage: 'revision',
@@ -1147,6 +1151,67 @@ export async function runRevision(
     });
     await q.markStageFailed(request.id, 'revision', message);
     return { stage: 'revision', ok: false, status: 'failed', message };
+  }
+}
+
+/**
+ * Tell the reviewers a request has reached the gate.
+ *
+ * Fire-and-forget on purpose. The pipeline has already done its work and
+ * moved the request; a mail server being slow or misconfigured must not undo
+ * that or fail the stage. What it must not do is fail SILENTLY, so the
+ * outcome — sent, skipped, or refused — is written to the request's own log
+ * either way.
+ *
+ * The link uses APP_URL because there is no incoming request to derive an
+ * origin from this deep in the pipeline. That setting has been stale before,
+ * and a wrong one here sends reviewers to the wrong place, so it is worth
+ * checking after a domain change.
+ */
+async function notifyReviewers(requestId: string): Promise<void> {
+  try {
+    const request = await q.getRequest(requestId);
+    if (!request) return;
+
+    const [emails, author, versions] = await Promise.all([
+      q.listReviewerEmails(),
+      request.author_id ? q.findAppUser(request.author_id) : Promise.resolve(null),
+      q.getCurrentVersions(requestId),
+    ]);
+
+    const result = await sendReviewRequest({
+      toEmails: emails,
+      title: request.title_hint || request.raw_idea.slice(0, 80),
+      audience: request.target_audience,
+      createdBy: author?.full_name?.trim() || author?.email || 'someone',
+      optionCount: versions.length,
+      link: `${env.APP_URL.replace(/\/$/, '')}/r/${requestId}`,
+    });
+
+    await q.logEvent({
+      requestId,
+      actor: 'system',
+      stage: null,
+      step: 'reviewers_notified',
+      ok: result.sent || result.skipped,
+      // EmailOutcome is a discriminated union — a sent result carries counts,
+      // an unsent one carries a reason. Narrow rather than reach for fields
+      // that only exist on one arm.
+      detail: result.sent
+        ? { reviewers: emails.length, sent: true, accepted: result.accepted, rejected: result.rejected }
+        : { reviewers: emails.length, sent: false, skipped: result.skipped, reason: result.reason },
+    });
+  } catch (err) {
+    await q
+      .logEvent({
+        requestId,
+        actor: 'system',
+        stage: null,
+        step: 'reviewers_notified',
+        ok: false,
+        detail: { error: err instanceof Error ? err.message : String(err) },
+      })
+      .catch(() => {});
   }
 }
 
