@@ -165,6 +165,13 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
       targetAudience: request.target_audience,
       sourceUrl: request.source_url,
       primaryKeyword: request.primary_keyword,
+      secondaryKeywords: request.secondary_keywords,
+      supportingNotes: request.supporting_notes,
+      desiredTone: request.desired_tone,
+      wordCountTarget: request.word_count_target,
+      optionCount: request.option_count,
+      deadlineAt: request.deadline_at?.toISOString() ?? null,
+      createdAt: request.created_at.toISOString(),
       readiness: request.readiness,
       clarifyingQuestions:
         (request.audit_json as { clarifying_questions?: string[] })?.clarifying_questions ?? [],

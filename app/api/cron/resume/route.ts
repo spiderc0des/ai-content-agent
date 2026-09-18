@@ -3,7 +3,7 @@ import { after } from 'next/server';
 import { cronEnabled } from '@/lib/env';
 import { isAuthorisedCronRequest } from '@/lib/cron-auth';
 import { findStalledPipelines, claimPipelineLock, logEvent } from '@/lib/queries';
-import { drivePipeline } from '@/lib/pipeline';
+import { driveAndContinue } from '@/lib/continue-run';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -53,7 +53,7 @@ export async function GET(request: NextRequest) {
     }).catch(() => {});
 
     after(async () => {
-      await drivePipeline(row.id, 'cron:resume');
+      await driveAndContinue(row.id, 'cron:resume', 0, new URL(request.url).origin);
     });
   }
 
