@@ -84,11 +84,21 @@ describe('the run budget reserves time for the stage it is about to start', () =
     }
   });
 
-  it('reserves for research by depth, since depth is what sets its length', () => {
-    expect(reserveFor('research', 'quick')).toBeLessThan(reserveFor('research', 'standard'));
-    expect(reserveFor('research', 'standard')).toBeLessThanOrEqual(reserveFor('research', 'deep'));
-    // Quick research has to be able to follow the audit in the same slice.
-    expect(20_000 + reserveFor('research', 'quick')).toBeLessThanOrEqual(RUN_BUDGET_MS);
+  it('reserves research for the slow draw, at every depth', () => {
+    // This used to assert that quick reserved less than standard, and that
+    // quick research could follow the audit inside one slice. Both were wrong,
+    // and the measurements say why: across quick runs doing identical work —
+    // 6 sources, 4 readable, ~1,000 input tokens, ~4,000 output — the wall
+    // clock ranged from 46s to 276s. Depth decides how much research READS and
+    // WRITES; it does not decide how long the websites take to answer, and
+    // that is what the clock is spent on.
+    //
+    // So research now owns its slice at any depth. Reserving too much costs a
+    // hand-off; reserving too little costs the stage, its spend and the lock.
+    for (const depth of ['quick', 'standard', 'deep']) {
+      expect(reserveFor('research', depth), depth).toBeGreaterThanOrEqual(276_000);
+    }
+    expect(reserveFor('research', 'deep')).toBeGreaterThanOrEqual(reserveFor('research', 'standard'));
   });
 
   it('assumes the worst for a stage it has never heard of', () => {
