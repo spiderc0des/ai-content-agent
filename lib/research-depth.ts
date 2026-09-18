@@ -75,6 +75,19 @@ export interface DepthProfile {
    * no room left in the brief to say anything about it.
    */
   maxContinuations: number;
+  /**
+   * The most effort any stage in the pipeline may use at this depth.
+   *
+   * Depth is a whole-pipeline dial, not just a research setting. Quick caps
+   * at medium, so planning, generation, evaluation and revision — the four
+   * calls that would otherwise run high — come down with it. That is most of
+   * what makes a quick run quick: those four are the longest stages and the
+   * largest output lines in the bill.
+   *
+   * Standard and deep keep high where a call asks for it, so nothing about
+   * the default behaviour changes.
+   */
+  maxEffort: 'medium' | 'high';
   /** For the form. */
   label: string;
   hint: string;
@@ -104,9 +117,10 @@ const PROFILES: Record<ResearchDepth, DepthProfile> = {
     maxOutputTokens: 8000,
     maxContentTokens: 4000,
     maxContinuations: 1,
+    maxEffort: 'medium',
     label: 'Quick',
     pace: 'about 2–4 minutes',
-    hint: 'One search pass, up to 6 sources, a short brief. Fastest and cheapest; a narrower evidence base.',
+    hint: 'One search pass, up to 6 sources, a short brief, and every stage capped at medium effort. Fastest and cheapest; a narrower evidence base.',
   },
   standard: {
     maxSearches: 8,
@@ -118,6 +132,7 @@ const PROFILES: Record<ResearchDepth, DepthProfile> = {
     maxOutputTokens: 16000,
     maxContentTokens: 8000,
     maxContinuations: 3,
+    maxEffort: 'high',
     label: 'Standard',
     pace: 'about 4–8 minutes',
     hint: 'Searches again if too few sources can be read. Up to 12 sources.',
@@ -132,6 +147,7 @@ const PROFILES: Record<ResearchDepth, DepthProfile> = {
     maxOutputTokens: 24000,
     maxContentTokens: 12000,
     maxContinuations: 4,
+    maxEffort: 'high',
     label: 'Deep',
     pace: 'about 8–15 minutes',
     hint: 'Casts wider, keeps up to 18 sources, writes a fuller brief. Noticeably slower and dearer.',

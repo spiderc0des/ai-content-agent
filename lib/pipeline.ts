@@ -54,6 +54,9 @@ function intakeOf(r: ContentRequestRow): Partial<Intake> {
     desired_tone: r.desired_tone,
     word_count_target: r.word_count_target,
     option_count: r.option_count,
+    // Not shown to the model — intakeAsText filters it out. It travels here
+    // so each call can size its effort from the depth the request asked for.
+    research_depth: r.research_depth as Intake['research_depth'],
   };
 }
 
