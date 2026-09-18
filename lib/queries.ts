@@ -353,10 +353,20 @@ export async function reapStaleStageRuns(requestId: string, olderThan = '15 minu
     update stage_runs
        set status = 'failed',
            finished_at = now(),
-           duration_ms = round(extract(epoch from (now() - started_at)) * 1000),
+           -- duration_ms stays NULL on purpose. The obvious thing is to record
+           -- now() - started_at, and that is WRONG: it measures how long the
+           -- row sat abandoned before somebody noticed, not how long the work
+           -- took. Doing it that way logged a 300-second stage as 1,620s and
+           -- 5,011s, which read as "revision is catastrophically slow" — and
+           -- those fabricated numbers went straight into the table the run
+           -- budget's per-stage reserves are derived from. A duration we do
+           -- not know is better left unknown than invented.
+           duration_ms = null,
            failure_reason = 'internal',
            error = 'The run driving this stage stopped without reporting an outcome '
-                || '(most likely killed at the platform time limit). No result was recorded.'
+                || '(most likely killed at the platform time limit). No result was '
+                || 'recorded. Noticed after '
+                || round(extract(epoch from (now() - started_at)))::text || 's.'
      where request_id = ${requestId}
        and status = 'running'
        and started_at < now() - ${olderThan}::interval

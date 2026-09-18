@@ -994,8 +994,18 @@ export async function runRevision(
     let revised = 0;
     const failures: string[] = [];
 
+    // Work out what each option needs BEFORE calling anything, so the calls
+    // themselves can run together.
+    const jobs = [];
     for (const version of versions) {
       const evaluation = await q.getEvaluationFor(version.id);
+
+      // An option the evaluator passed does not get rewritten. Revision is
+      // reached when nothing passed, so this is usually empty — but a human
+      // revising one option of three must not silently have the other two
+      // rewritten underneath them, and a passing draft is the one thing a
+      // revision can only make worse.
+      if (!opts.instruction && evaluation?.status === 'pass') continue;
 
       // A human instruction always wins. Without one, the evaluation's own
       // findings are the instruction.
@@ -1015,15 +1025,32 @@ export async function runRevision(
           .join('\n');
 
       if (!instruction.trim()) continue; // nothing was wrong with this one
+      jobs.push({ version, evaluation, instruction });
+    }
 
-      const outcome = await claude.reviseArticle({
-        intake: intakeOf(request),
-        title: version.title,
-        bodyMd: version.body_md,
-        instruction,
-        fromHuman,
-        selected,
-      });
+    // One call per option, RUN TOGETHER — the same shape generation already
+    // uses. Sequentially, three options at ~145s each is ~435s, and the
+    // platform kills the function at 300: this stage failed three times in a
+    // row that way, each time throwing out the options it had already
+    // rewritten. Run together the stage costs about as long as its slowest
+    // option instead of the sum of all of them.
+    const outcomes = await Promise.all(
+      jobs.map(async (job) => ({
+        job,
+        outcome: await claude.reviseArticle({
+          intake: intakeOf(request),
+          title: job.version.title,
+          bodyMd: job.version.body_md,
+          instruction: job.instruction,
+          fromHuman,
+          selected,
+        }),
+      })),
+    );
+
+    // Persisting stays sequential. These writes are short, and doing them one
+    // at a time keeps option order deterministic in the log.
+    for (const { job, outcome } of outcomes) {
       usage.add(outcome);
 
       if (!outcome.ok) {
@@ -1031,17 +1058,17 @@ export async function runRevision(
         // works this way; revision used to throw here, which threw away any
         // option it had ALREADY revised in this same pass and failed the whole
         // request over one bad call.
-        failures.push(`Option ${version.article_id.slice(0, 8)} — ${outcome.reason}: ${outcome.message}`);
+        failures.push(`Option ${job.version.article_id.slice(0, 8)} — ${outcome.reason}: ${outcome.message}`);
         continue;
       }
 
       await persistDraft({
         request,
-        articleId: version.article_id,
-        parentVersionId: version.id,
+        articleId: job.version.article_id,
+        parentVersionId: job.version.id,
         origin: fromHuman ? 'human_revised' : 'auto_revised',
-        revisionInstruction: instruction,
-        evaluationId: evaluation?.id ?? null,
+        revisionInstruction: job.instruction,
+        evaluationId: job.evaluation?.id ?? null,
         draft: outcome.data,
         primaryKeyword: plan?.primary_keyword ?? request.primary_keyword,
         secondaryKeywords: plan?.secondary_keywords ?? request.secondary_keywords,
