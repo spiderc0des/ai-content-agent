@@ -9,7 +9,7 @@ import {
   claimPipelineLock,
   logEvent,
 } from '@/lib/queries';
-import { drivePipeline } from '@/lib/pipeline';
+import { driveAndContinue } from '@/lib/continue-run';
 import { errorResponse } from '@/lib/api-helpers';
 import { requiredText, optionalHttpUrl, firstIssue } from '@/lib/validation';
 import { assessSource } from '@/lib/source-quality';
@@ -113,7 +113,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // here rather than letting a whole content_requests row leak into the
     // response body under a field named `resumed`.
     const running = Boolean(await claimPipelineLock(id, user.email));
-    if (running) after(async () => void (await drivePipeline(id, user.email)));
+    if (running)
+      after(async () => void (await driveAndContinue(id, user.email, 0, new URL(request.url).origin)));
 
     return NextResponse.json(
       {

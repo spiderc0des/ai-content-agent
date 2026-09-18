@@ -11,7 +11,7 @@ import {
   contentFingerprint,
   claimPipelineLock,
 } from '@/lib/queries';
-import { drivePipeline } from '@/lib/pipeline';
+import { driveAndContinue } from '@/lib/continue-run';
 import { errorResponse, withEventLog } from '@/lib/api-helpers';
 import type { RequestStatus } from '@/lib/db-schemas';
 
@@ -136,7 +136,7 @@ export async function POST(
       const claimed = await claimPipelineLock(id, user.email);
       if (claimed) {
         after(async () => {
-          await drivePipeline(id, user.email);
+          await driveAndContinue(id, user.email);
         });
       }
       return NextResponse.json({

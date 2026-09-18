@@ -42,6 +42,13 @@ export interface WorkspaceData {
     targetAudience: string;
     sourceUrl: string | null;
     primaryKeyword: string;
+    secondaryKeywords: string[];
+    supportingNotes: string;
+    desiredTone: string;
+    wordCountTarget: number | null;
+    optionCount: number;
+    deadlineAt: string | null;
+    createdAt: string;
     readiness: string | null;
     clarifyingQuestions: string[];
     blockingReason: string | null;
@@ -731,6 +738,37 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
           <div className="panel panel-danger mt-4">{error}</div>
         )}
       </section>
+
+      {/* ── The request as it was submitted ────────────────────────────── */}
+      <details className="card">
+        <summary className="cursor-pointer font-semibold">The request</summary>
+        <p className="mt-2 text-xs" style={{ color: 'var(--ink-faint)' }}>
+          Everything the pipeline was given. Submitted {new Date(request.createdAt).toLocaleString()}.
+        </p>
+        <dl className="mt-3 space-y-3 text-sm">
+          <Field label="Idea" value={request.rawIdea} />
+          <Field label="Audience" value={request.targetAudience} />
+          <Field label="Source URL" value={request.sourceUrl} link />
+          <Field label="Supporting material" value={request.supportingNotes} />
+          <Field label="Title hint" value={request.titleHint} />
+          <Field label="Primary keyword" value={request.primaryKeyword} />
+          <Field label="Secondary keywords" value={request.secondaryKeywords.join(', ')} />
+          <Field label="Tone" value={request.desiredTone} />
+          <Field
+            label="Word count target"
+            value={request.wordCountTarget ? String(request.wordCountTarget) : ''}
+          />
+          <Field label="Options asked for" value={String(request.optionCount)} />
+          <Field
+            label="Channels"
+            value={request.channelsWanted.map((c) => CHANNEL_LABEL[c] ?? c).join(', ')}
+          />
+          <Field
+            label="Deadline"
+            value={request.deadlineAt ? new Date(request.deadlineAt).toLocaleString() : ''}
+          />
+        </dl>
+      </details>
 
       {/* ── Options ────────────────────────────────────────────────────── */}
       {data.options.length > 0 && (
@@ -1673,6 +1711,34 @@ function reviewSentence(r: WorkspaceData['reviews'][number]): string {
     default:
       return `${r.by} acted on ${option}`;
   }
+}
+
+/**
+ * One intake field.
+ *
+ * Empty ones are skipped rather than rendered as "—". Most of this form is
+ * optional, so a typical request leaves half of it blank; printing a dash for
+ * each turns the panel into a list of things that are not there, and buries
+ * the three or four that were actually filled in.
+ */
+function Field({ label, value, link }: { label: string; value: string | null; link?: boolean }) {
+  if (!value?.trim()) return null;
+  return (
+    <div>
+      <dt className="text-xs uppercase tracking-wide" style={{ color: 'var(--ink-faint)' }}>
+        {label}
+      </dt>
+      <dd className="mt-0.5 whitespace-pre-wrap break-words">
+        {link ? (
+          <a href={value} target="_blank" rel="noreferrer noopener">
+            {value}
+          </a>
+        ) : (
+          value
+        )}
+      </dd>
+    </div>
+  );
 }
 
 /** "ok" for a completed stage read better than the raw enum value "ok". */

@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { after } from 'next/server';
 import { requireUser, canRunPipeline, isPipelineRunnable } from '@/lib/auth';
 import { getRequest, claimPipelineLock, lockIsLive } from '@/lib/queries';
-import { drivePipeline, nextStage } from '@/lib/pipeline';
+import { nextStage } from '@/lib/pipeline';
+import { driveAndContinue } from '@/lib/continue-run';
 import { errorResponse } from '@/lib/api-helpers';
 
 // The response returns in milliseconds; the work carries on behind it via
@@ -87,7 +88,10 @@ export async function POST(
     // milliseconds and starts polling; the pipeline keeps going regardless of
     // what the browser does next — closing the tab no longer stops it.
     after(async () => {
-      await drivePipeline(id, user.email);
+      // Drives, and hands off to itself if the platform's function limit cuts
+      // the run short — see lib/continue-run.ts. A full pipeline is longer
+      // than any single function is allowed to live.
+      await driveAndContinue(id, user.email, 0, new URL(request.url).origin);
     });
 
     return NextResponse.json(
