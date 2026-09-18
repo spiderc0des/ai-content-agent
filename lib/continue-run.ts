@@ -90,8 +90,15 @@ export async function driveAndContinue(
    * APP_URL remains the fallback for callers with no request in hand.
    */
   origin?: string,
+  /**
+   * What this driver's lock was claimed with, when it differs from `actor`.
+   * The continue endpoint claims as `continue:hop-N` and drives as
+   * `pipeline`; without this the driver would heartbeat and release a lock
+   * that was never its own.
+   */
+  lockOwner?: string,
 ): Promise<DriveResult> {
-  const result = await drivePipeline(requestId, actor);
+  const result = await drivePipeline(requestId, actor, lockOwner ?? actor);
 
   if (result.stoppedBecause !== 'out_of_time') return result;
 

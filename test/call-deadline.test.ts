@@ -42,16 +42,28 @@ describe('every Claude call is bounded', () => {
     const m = /const RESEARCH_DEADLINE_MS = ([\d_]+);/.exec(CLAUDE);
     expect(m).not.toBeNull();
     const ms = Number(m![1].replace(/_/g, ''));
-    // Comfortably above what research should take now that its tool budgets
-    // are sized to fit the platform limit, and still finite.
+    // Above what research should take with its budgets cut, and finite.
     //
-    // Both earlier values were wrong, for opposite reasons. 300s would have
-    // aborted a 657-second call that completed normally — a deadline tighter
-    // than observed healthy work does not catch hangs, it manufactures them.
-    // 900s cleared that maximum, but the maximum was itself the symptom:
-    // research was allowed 24 web fetches and took as long as the slowest.
-    expect(ms).toBeGreaterThanOrEqual(2 * 300_000);
-    expect(ms).toBeLessThanOrEqual(600_000);
+    // This is now the WHOLE budget for the stage, not per attempt, because a
+    // deadline abort is no longer retried. At 600s across three attempts the
+    // worst case was thirty minutes — and a run was observed sitting at
+    // twenty-one with its stage row still saying `running`, which looks
+    // exactly like the hang the deadline exists to end.
+    expect(ms).toBeGreaterThan(300_000);
+    expect(ms).toBeLessThanOrEqual(420_000);
+  });
+
+  it('does not retry a deadline abort', () => {
+    // Retrying a deadline is the same as not having one: three attempts
+    // against a ten-minute deadline is a thirty-minute stage that reports
+    // nothing while it runs. These are not transient — a call that spends its
+    // whole deadline is working through slow web fetches, and another
+    // deadline buys another slow crawl, not a different answer.
+    const at = CLAUDE.indexOf('if (isDeadlineAbort(err))');
+    expect(at).toBeGreaterThan(-1);
+    const body = CLAUDE.slice(at, at + 500);
+    expect(body).not.toContain('continue;');
+    expect(body).toContain('return {');
   });
 
   it('reports a deadline abort as its own failure, not as a bad response', () => {

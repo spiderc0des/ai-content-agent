@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireUser, canViewRequest } from '@/lib/auth';
-import { getRequest, getStageRuns, lockIsLive } from '@/lib/queries';
+import { getRequest, getStageRuns, workInFlight } from '@/lib/queries';
 import { nextStage, progressOf } from '@/lib/pipeline';
 import { errorResponse } from '@/lib/api-helpers';
 
@@ -36,7 +36,7 @@ export async function GET(
     }
 
     const last = runs[runs.length - 1] ?? null;
-    const running = lockIsLive(row);
+    const running = workInFlight(row);
 
     return NextResponse.json({
       status: row.status,

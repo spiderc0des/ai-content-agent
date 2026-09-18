@@ -166,6 +166,13 @@ ${params.angle}
 WHAT MAKES IT DIFFERENT
 ${params.whyItDiffers}
 
+You are writing for the READER, never for whoever commissioned this. Do not
+explain your approach, justify your choices, note what you could not do, or
+address the brief. No "Editor's note", no preamble about scope — a section
+like that is a message to the wrong audience and it will be published to the
+real one. If the request rests on something you could not verify, correct it
+inside the article as reporting, which is what a reader is there for.
+
 Commit to this angle. Do not hedge toward the other options — a reviewer is
 comparing distinct takes, and three near-identical drafts waste the comparison.
 

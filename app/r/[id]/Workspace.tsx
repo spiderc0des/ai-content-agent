@@ -689,7 +689,8 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
         <p className="mt-3 text-xs" style={{ color: 'var(--ink-faint)' }}>
           {request.lastRun ? (
             <>
-              Last activity: {request.lastRun.stage} {statusWord(request.lastRun.status)}{' '}
+              Last activity: {request.lastRun.stage}{' '}
+              {statusWord(request.lastRun.status, running)}{' '}
               {relativeTime(request.lastRun.finishedAt ?? request.lastRun.startedAt)}
             </>
           ) : (
@@ -1806,10 +1807,22 @@ function Field({ label, value, link }: { label: string; value: string | null; li
 }
 
 /** "ok" for a completed stage read better than the raw enum value "ok". */
-function statusWord(status: string): string {
+/**
+ * What to call a stage's state, given whether anything is actually driving it.
+ *
+ * `running` is a claim the row makes, not a fact — a stage row says so until
+ * something finishes it, and a driver that died never gets to. The stage list
+ * above already checks the lock before saying "running", and this line did
+ * not, so the same panel could read "research — stopped, no driver" on one
+ * line and "research is running, started just now" on the next.
+ *
+ * Two contradictory sentences are worse than either one alone: they cost the
+ * reader the assumption that the page knows what is happening.
+ */
+function statusWord(status: string, driverAlive: boolean): string {
   if (status === 'ok') return 'finished';
   if (status === 'failed') return 'failed';
-  if (status === 'running') return 'is running, started';
+  if (status === 'running') return driverAlive ? 'is running, started' : 'stopped, started';
   return status;
 }
 

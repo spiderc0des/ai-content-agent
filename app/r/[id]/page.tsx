@@ -18,7 +18,7 @@ import {
   articleViewStats,
   getReviews,
   getStageRuns,
-  lockIsLive,
+  workInFlight,
   findAppUser,
 } from '@/lib/queries';
 import { nextStage, progressOf } from '@/lib/pipeline';
@@ -205,7 +205,7 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
       progress: progressOf(request.status),
       nextStage: nextStage(request),
       updatedAt: request.updated_at.toISOString(),
-      running: lockIsLive(request),
+      running: workInFlight(request),
       lastRun: lastRun
         ? {
             stage: lastRun.stage,

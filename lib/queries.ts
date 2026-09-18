@@ -587,7 +587,20 @@ export async function startAutoRevision(id: string): Promise<ContentRequestRow> 
  * request locked and unresumable for the full twenty minutes with nothing
  * wrong with it.
  */
-const LOCK_STALE_AFTER = '3 minutes';
+const LOCK_STALE_AFTER_MS = 3 * 60 * 1000;
+
+/**
+ * The same window, in the form Postgres wants.
+ *
+ * Derived rather than written twice. It WAS written twice, and the two copies
+ * drifted: this was tightened from twenty minutes to three, and lockIsLive()
+ * — the JavaScript the delete guard, the reset guard and the "Running…" badge
+ * all use — kept its own hardcoded twenty. So the database would let a new
+ * driver reclaim a lock while the interface still insisted the pipeline was
+ * running on it, and a request could not be deleted or reset for another
+ * seventeen minutes after it was already fair game.
+ */
+const LOCK_STALE_AFTER = `${LOCK_STALE_AFTER_MS} milliseconds`;
 
 /**
  * Take ownership of a request's pipeline, or return null if someone already
@@ -615,10 +628,29 @@ export async function claimPipelineLock(id: string, actor: string) {
 }
 
 /** Called between stages so a long run is not mistaken for a dead one. */
-export async function heartbeatPipelineLock(id: string) {
-  await sql`
-    update content_requests set pipeline_heartbeat_at = now()
-    where id = ${id} and pipeline_lock_at is not null`;
+/**
+ * Say we are still working — and find out whether we are still allowed to.
+ *
+ * Returns false when the lock has moved on. That is the ONLY cheap way a
+ * driver learns it has been superseded: its stage calls succeed, its writes
+ * look fine, and nothing else tells it that another driver reclaimed the
+ * request twenty minutes ago and is four stages further along.
+ *
+ * The owner check is the whole point. Without it a zombie kept refreshing a
+ * lock it no longer held, which made the rightful owner's lock look eternally
+ * fresh while the zombie carried on working in parallel.
+ */
+export async function heartbeatPipelineLock(id: string, owner?: string): Promise<boolean> {
+  const rows = owner
+    ? await sql`
+        update content_requests set pipeline_heartbeat_at = now()
+        where id = ${id} and pipeline_lock_by = ${owner}
+        returning 1 as ok`
+    : await sql`
+        update content_requests set pipeline_heartbeat_at = now()
+        where id = ${id} and pipeline_lock_at is not null
+        returning 1 as ok`;
+  return rows.length > 0;
 }
 
 /**
@@ -652,12 +684,80 @@ export async function findStalledPipelines(limit = 5) {
   return rows.map((r) => ContentRequestRow.parse(r));
 }
 
-export async function releasePipelineLock(id: string) {
-  await sql`
-    update content_requests set
-      pipeline_lock_at = null, pipeline_lock_by = null, pipeline_heartbeat_at = null
-    where id = ${id}`;
+/**
+ * Let go of the lock — but only if it is still ours.
+ *
+ * It used to release unconditionally, on id alone, and that single missing
+ * clause produced a lock-stealing cascade. A driver that hung long enough for
+ * its lock to go stale would be superseded by a second driver; when the first
+ * one finally returned, its own `finally` stripped the lock out from under the
+ * second. That driver then worked with no lock at all, so a third could claim
+ * the same request — and a late arrival could fail a run that four stages of
+ * healthy work had gone into.
+ *
+ * Releasing something you do not hold is not cleanup, it is interference.
+ */
+export async function releasePipelineLock(id: string, owner?: string): Promise<boolean> {
+  const rows = owner
+    ? await sql`
+        update content_requests set
+          pipeline_lock_at = null, pipeline_lock_by = null, pipeline_heartbeat_at = null
+        where id = ${id} and pipeline_lock_by = ${owner}
+        returning 1 as ok`
+    : await sql`
+        update content_requests set
+          pipeline_lock_at = null, pipeline_lock_by = null, pipeline_heartbeat_at = null
+        where id = ${id}
+        returning 1 as ok`;
+  return rows.length > 0;
 }
+
+/**
+ * How long after a request last moved we still assume somebody is on it.
+ *
+ * A hand-off between slices has a real gap: the finishing driver releases its
+ * lock, calls the continue endpoint, and the next driver claims it. Measured
+ * on live runs that gap is two to three seconds — and the page polls every
+ * five, so a poll landing inside it saw no lock and told the user the pipeline
+ * had stopped, offering Resume for work that was already carrying on.
+ *
+ * Thirty seconds is ten times the observed gap. A genuine stall is still
+ * surfaced, just half a minute later — a trade worth making, because an
+ * indicator that cries stall during normal operation is one nobody believes
+ * when it matters.
+ */
+const HANDOFF_GRACE_MS = 30_000;
+
+/**
+ * Is work in flight on this request — including between slices?
+ *
+ * `lockIsLive` answers "is a lock held right now", which is the right question
+ * for deciding whether a NEW driver may start. It is the wrong question for
+ * telling a person whether anything is happening, because it says no during
+ * every hand-off.
+ */
+export function workInFlight(r: {
+  status: string;
+  pipeline_lock_at: Date | null;
+  pipeline_heartbeat_at: Date | null;
+  updated_at: Date;
+}): boolean {
+  if (lockIsLive(r)) return true;
+  if (!MACHINE_STATUSES.has(r.status)) return false;
+  return Date.now() - r.updated_at.getTime() < HANDOFF_GRACE_MS;
+}
+
+/** Statuses where the machine, not a person, is expected to move things on. */
+const MACHINE_STATUSES = new Set([
+  'researching',
+  'retrieving',
+  'selecting',
+  'planning',
+  'generating',
+  'evaluating',
+  'revising',
+  'packaging',
+]);
 
 /** Is a driver currently working on this, and does it still look alive? */
 export function lockIsLive(r: {
@@ -666,7 +766,10 @@ export function lockIsLive(r: {
 }): boolean {
   if (!r.pipeline_lock_at) return false;
   const beat = r.pipeline_heartbeat_at ?? r.pipeline_lock_at;
-  return Date.now() - beat.getTime() < 20 * 60 * 1000;
+  // The same window the database reclaims on — see LOCK_STALE_AFTER_MS. These
+  // must agree: if this is the more generous of the two, the interface calls a
+  // request busy that another driver is already allowed to take.
+  return Date.now() - beat.getTime() < LOCK_STALE_AFTER_MS;
 }
 
 /**
@@ -700,16 +803,63 @@ export async function advanceStatus(
   return ContentRequestRow.parse(rows[0]);
 }
 
+/**
+ * The status a request is in while a given stage is its current work.
+ *
+ * Used to make failing a stage conditional: a stage may only fail the request
+ * it was actually working on.
+ */
+const STATUS_WHILE_RUNNING: Partial<Record<PipelineStage, string[]>> = {
+  audit: ['draft'],
+  research: ['researching'],
+  retrieval: ['retrieving'],
+  selection: ['selecting'],
+  planning: ['planning'],
+  generation: ['generating'],
+  evaluation: ['evaluating'],
+  revision: ['revising'],
+  packaging: ['packaging', 'approved'],
+};
+
+/**
+ * Fail the request — but only if it is still on this stage.
+ *
+ * It used to update on id alone, which let a driver fail a request it no
+ * longer had anything to do with. That is not hypothetical: a research call
+ * failed twelve minutes after a second driver had taken the request over and
+ * carried it to generation, and the late failure marked the whole healthy run
+ * failed. The next stage then failed too, because the request it was working
+ * on had just been failed underneath it.
+ *
+ * The ConflictError path covers a superseded driver whose status WRITE is
+ * rejected. This covers the other half: a superseded driver whose Claude call
+ * simply failed on its own terms, which never touches a status transition and
+ * so was never caught by it.
+ *
+ * Returns whether it actually failed anything, so a caller can tell the
+ * difference between "this request is now failed" and "this request moved on
+ * without me".
+ */
 export async function markStageFailed(
   id: string,
   stage: PipelineStage,
   reason: string,
-): Promise<void> {
-  await sql`
-    update content_requests set
-      status = 'failed', failed_stage = ${stage}::pipeline_stage,
-      failed_reason = ${reason}, version = version + 1
-    where id = ${id}`;
+): Promise<boolean> {
+  const allowed = STATUS_WHILE_RUNNING[stage];
+  const rows = allowed
+    ? await sql`
+        update content_requests set
+          status = 'failed', failed_stage = ${stage}::pipeline_stage,
+          failed_reason = ${reason}, version = version + 1
+        where id = ${id} and status = any(${allowed}::request_status[])
+        returning 1 as ok`
+    : await sql`
+        update content_requests set
+          status = 'failed', failed_stage = ${stage}::pipeline_stage,
+          failed_reason = ${reason}, version = version + 1
+        where id = ${id}
+        returning 1 as ok`;
+  return rows.length > 0;
 }
 
 /**

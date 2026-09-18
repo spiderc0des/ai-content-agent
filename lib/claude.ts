@@ -143,8 +143,14 @@ const client = new Anthropic({
  * all, which is the only thing a client-side deadline can catch: the ceiling
  * itself is enforced by Vercel killing the function, and no value here
  * changes that.
+ *
+ * Seven minutes, and it is now the WHOLE budget for the stage rather than per
+ * attempt — a deadline abort is no longer retried, because retrying a
+ * deadline is the same as not having one. At 600s with three attempts the
+ * worst case was thirty minutes of a stage row saying `running` and nothing
+ * else happening.
  */
-const RESEARCH_DEADLINE_MS = 600_000;
+const RESEARCH_DEADLINE_MS = 420_000;
 
 /**
  * A hard deadline on a single call, as an abort signal rather than the
@@ -206,6 +212,27 @@ interface Attempt<T> {
  * Retries only 429s (honouring retry-after) — never a 400, which means our
  * own request was malformed and retrying it changes nothing.
  */
+/**
+ * Turn an Anthropic spend-limit error into something worth reading.
+ *
+ * Returns null for anything else, so ordinary API errors keep their existing
+ * wording.
+ */
+function usageLimitMessage(err: InstanceType<typeof Anthropic.APIError>): string | null {
+  const raw = String(err.message ?? '');
+  if (!/usage limit|credit balance|spend limit/i.test(raw)) return null;
+
+  const when = /regain access on ([0-9]{4}-[0-9]{2}-[0-9]{2})(?: at ([0-9:]+ ?\w*))?/i.exec(raw);
+  const returns = when ? ` Access returns on ${when[1]}${when[2] ? ` at ${when[2]}` : ''}.` : '';
+
+  return (
+    'The Anthropic workspace has reached its API spend limit, so no further ' +
+    `calls can be made.${returns} Raise the limit in the Anthropic console ` +
+    '(Settings → Limits) to carry on before then. Nothing already produced is ' +
+    'lost — this run can be resumed once there is budget.'
+  );
+}
+
 /**
  * Was this call cut off by its own deadline?
  *
@@ -277,19 +304,23 @@ async function withRetry<T>(
       if (err instanceof Anthropic.AuthenticationError) {
         return failure('api_error', 'The Anthropic API key is missing or invalid.', err, startedAt);
       }
-      // The call ran past its deadline and was aborted.
+      // The call ran past its deadline and was aborted. It is NOT retried.
       //
-      // This is the failure that used to have no representation at all: a
-      // streamed call the client timeout does not bound simply never came
-      // back, the stage row sat on `running`, and the request held its lock
-      // until something else noticed. Retrying once is worth it — the cause is
-      // usually a slow web fetch inside the server tool loop rather than
-      // anything about the request — but it stops being free after that.
+      // This branch first retried like any other transient failure, and that
+      // was a contradiction: a deadline says how long we are willing to wait,
+      // and waiting again is the definition of not having one. With three
+      // attempts against a ten-minute research deadline, the arithmetic came
+      // to thirty minutes before the stage reported anything at all — and a
+      // run was observed sitting at twenty-one, its stage row still saying
+      // `running`, which is indistinguishable from the hang this was added to
+      // catch.
+      //
+      // These are not transient either. A research call that spends its whole
+      // deadline is one working through slow web fetches; giving it another
+      // deadline buys another slow crawl, not a different answer. Failing here
+      // is visible in minutes, names the likely cause, and Resume re-runs the
+      // stage if it is worth another go.
       if (isDeadlineAbort(err)) {
-        if (n < maxAttempts) {
-          await new Promise((res) => setTimeout(res, 2 ** n * 1000));
-          continue;
-        }
         return {
           ok: false,
           reason: 'api_error',
@@ -313,6 +344,16 @@ async function withRetry<T>(
         continue;
       }
       if (err instanceof Anthropic.APIError) {
+        // A spend cap is not a bug, and it should not read like one.
+        //
+        // It arrives as a generic 400 whose message is a JSON blob, which the
+        // request page then showed verbatim — so the one failure a person can
+        // actually DO something about was the least legible on the screen.
+        // It is also the only API error with a known end: the message carries
+        // the date access returns, and retrying before then cannot succeed.
+        const capped = usageLimitMessage(err);
+        if (capped) return failure('api_error', capped, err, startedAt);
+
         return failure('api_error', `Claude API error (${err.status}): ${err.message}`, err, startedAt);
       }
       // A structured-output parse failure or a validation error we raised

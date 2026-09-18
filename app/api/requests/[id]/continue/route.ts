@@ -51,13 +51,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ continued: false, reason: 'another driver already has it' });
   }
 
-  const claimed = await claimPipelineLock(id, `continue:hop-${hop}`);
+  const lockOwner = `continue:hop-${hop}`;
+  const claimed = await claimPipelineLock(id, lockOwner);
   if (!claimed) {
     return NextResponse.json({ continued: false, reason: 'another driver claimed it first' });
   }
 
   after(async () => {
-    await driveAndContinue(id, 'pipeline', hop, origin);
+    await driveAndContinue(id, 'pipeline', hop, origin, lockOwner);
   });
 
   return NextResponse.json({ continued: true, hop }, { status: 202 });

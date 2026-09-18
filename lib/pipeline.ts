@@ -116,6 +116,51 @@ const STAGE_CONCURRENCY = 4;
  * same place: a failed stage_run, a failed request with the stage named, and
  * a StageResult the route can return as JSON.
  */
+/**
+ * Has this driver been superseded?
+ *
+ * A ConflictError from a status transition means another driver already moved
+ * this request on. That is not this request failing — and a driver with no
+ * standing to move it has no standing to fail it either.
+ *
+ * Without this, a research call that had hung for five minutes returned after
+ * its lock had been reclaimed, found the request four stages further along,
+ * and marked the whole healthy run failed. The next stage then failed too,
+ * because the request it was working on had just been failed underneath it.
+ */
+async function standDown(
+  request: ContentRequestRow,
+  stage: PipelineStage,
+  runId: string,
+  err: unknown,
+  startedAt: number,
+): Promise<StageResult | null> {
+  if (!(err instanceof q.ConflictError)) return null;
+  const message = err.message;
+
+  await q
+    .finishStageRun(runId, {
+      ok: false,
+      failureReason: 'internal',
+      error: `Superseded: ${message}`,
+      durationMs: Date.now() - startedAt,
+      detail: { stage, superseded: true },
+    })
+    .catch(() => {});
+  await q
+    .logEvent({
+      requestId: request.id,
+      actor: 'system',
+      stage,
+      step: 'stage_superseded',
+      ok: true,
+      detail: { stage, note: 'another driver moved this request on; this attempt stood down' },
+    })
+    .catch(() => {});
+
+  return { stage, ok: false, status: request.status, message: `Superseded: ${message}` };
+}
+
 async function runStage<T>(
   request: ContentRequestRow,
   stage: PipelineStage,
@@ -157,9 +202,48 @@ async function runStage<T>(
     await q.clearFailure(request.id);
     return result;
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+
+    // A ConflictError on a status transition means SOMEBODY ELSE MOVED THIS
+    // REQUEST. It does not mean the request failed.
+    //
+    // This one did real damage. A research call that had hung for nearly five
+    // minutes had its lock released, a second driver picked the request up and
+    // carried it through research, retrieval, selection, planning and
+    // generation — and then the original call finally returned, tried to
+    // advance 'researching' → 'retrieving', found the request at 'evaluating'
+    // and marked the whole healthy run failed. The next stage then failed too,
+    // because the request it was working on had just been failed underneath
+    // it.
+    //
+    // A driver that has been superseded has no standing to fail anything. It
+    // records its own stage outcome so the attempt is visible, and leaves the
+    // request to whoever holds it now.
+    if (err instanceof q.ConflictError) {
+      await q
+        .finishStageRun(run.id, {
+          ok: false,
+          failureReason: 'internal',
+          error: `Superseded: ${message}`,
+          durationMs: 0,
+          detail: { stage, superseded: true },
+        })
+        .catch(() => {});
+      await q
+        .logEvent({
+          requestId: request.id,
+          actor: 'system',
+          stage: stage as PipelineStage,
+          step: 'stage_superseded',
+          ok: true,
+          detail: { stage, note: 'another driver moved this request on; this attempt stood down' },
+        })
+        .catch(() => {});
+      return { stage, ok: false, status: request.status, message: `Superseded: ${message}` };
+    }
+
     // A persistence or validation problem, not an API one. It still has to
     // reach stage_runs, or the stage looks like it is still running.
-    const message = err instanceof Error ? err.message : String(err);
     await q
       .finishStageRun(run.id, {
         ok: false,
@@ -312,7 +396,27 @@ async function researchWithTopUp(
 
   const merged = () => mergeFindings(roundFindings, depth.maxSources);
 
+  const stageStartedAt = Date.now();
+
   for (let round = 1; round <= depth.maxRounds; round++) {
+    // A top-up round is a WHOLE extra research call — its own web searches,
+    // its own fetches, its own several minutes. Nothing used to bound the sum
+    // of them, so the stage could take as long as maxRounds × the slowest
+    // round: one real run spent 793 seconds across two rounds, against a
+    // platform that kills a function at 300.
+    //
+    // The deadline on each CALL cannot catch this, because each call is
+    // individually reasonable. What is unreasonable is starting another one
+    // when there is no time left to use the answer.
+    //
+    // Stopping here is not a failure. Research already reports a thin
+    // evidence base and the article is written narrower — which is the whole
+    // "degrade, don't die" rule this pipeline is built on, applied to time
+    // instead of to sources.
+    if (round > 1 && Date.now() - stageStartedAt > RESEARCH_ROUND_BUDGET_MS) {
+      break;
+    }
+
     const before = readableCount(merged());
     const outcome = await claude.researchTopic(intakeOf(request), {
       maxSearches: depth.maxSearches,
@@ -595,6 +699,8 @@ export async function runRetrieval(request: ContentRequestRow): Promise<StageRes
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const superseded = await standDown(request, 'retrieval', run.id, err, startedAt);
+    if (superseded) return superseded;
     await q.finishStageRun(run.id, {
       ok: false,
       failureReason: 'validation',
@@ -827,6 +933,8 @@ export async function runGeneration(request: ContentRequestRow): Promise<StageRe
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const superseded = await standDown(request, 'generation', run.id, err, startedAt);
+    if (superseded) return superseded;
     await q.finishStageRun(run.id, {
       ok: false,
       failureReason: 'validation',
@@ -1046,6 +1154,8 @@ export async function runEvaluation(request: ContentRequestRow): Promise<StageRe
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const superseded = await standDown(request, 'evaluation', run.id, err, startedAt);
+    if (superseded) return superseded;
     await q.finishStageRun(run.id, {
       ok: false,
       failureReason: 'validation',
@@ -1229,6 +1339,8 @@ export async function runRevision(
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const superseded = await standDown(request, 'revision', run.id, err, startedAt);
+    if (superseded) return superseded;
     await q.finishStageRun(run.id, {
       ok: false,
       failureReason: 'validation',
@@ -1460,6 +1572,8 @@ export async function runPackaging(request: ContentRequestRow): Promise<StageRes
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const superseded = await standDown(request, 'packaging', run.id, err, startedAt);
+    if (superseded) return superseded;
     await q.finishStageRun(run.id, {
       ok: false,
       failureReason: 'validation',
@@ -1591,6 +1705,20 @@ export const RUN_BUDGET_MS = Number(process.env.PIPELINE_RUN_BUDGET_MS ?? 270_00
  * is never mistaken for an abandoned one, and comfortably rarely enough that
  * it is one small UPDATE a minute rather than a load.
  */
+/**
+ * How long research may spend before it stops going back for more.
+ *
+ * Not a deadline on the stage — the round already running is allowed to
+ * finish, because abandoning a call that is about to answer wastes everything
+ * it fetched. This is the point past which a NEW round is no longer worth
+ * starting.
+ *
+ * 240s, so that one round plus its overhead still has a chance of fitting
+ * inside a 300-second function. A second round beginning after that cannot
+ * finish there whatever it finds.
+ */
+const RESEARCH_ROUND_BUDGET_MS = 240_000;
+
 const HEARTBEAT_MS = 20_000;
 
 /**
@@ -1707,7 +1835,18 @@ export interface DriveResult {
  * claims it so it can answer "already running" synchronously — and releases
  * it here when the run ends, however it ends.
  */
-export async function drivePipeline(requestId: string, actor: string): Promise<DriveResult> {
+export async function drivePipeline(
+  requestId: string,
+  actor: string,
+  /**
+   * The exact value this driver's lock was claimed with.
+   *
+   * Not the same thing as `actor`: the continue endpoint claims as
+   * `continue:hop-2` but drives as `pipeline`, so a driver that assumed they
+   * matched would release and heartbeat a lock that was never its own.
+   */
+  lockOwner: string = actor,
+): Promise<DriveResult> {
   const startedAt = Date.now();
 
   // Clean up after a driver that did not come back. A process killed mid-stage
@@ -1771,6 +1910,9 @@ export async function drivePipeline(requestId: string, actor: string): Promise<D
     })
     .catch(() => {});
 
+  /** Set by the heartbeat the moment the lock stops being ours. */
+  let superseded = false;
+
   let stagesRun = 0;
   let finalStatus = 'unknown';
   // Guards against a stage that keeps being chosen but never changes the
@@ -1786,7 +1928,14 @@ export async function drivePipeline(requestId: string, actor: string): Promise<D
   const heartbeat = setInterval(() => {
     void (async () => {
       if (Date.now() - startedAt <= MAX_DRIVE_MS) {
-        await q.heartbeatPipelineLock(requestId).catch(() => {});
+        // A false answer means the lock is no longer ours — another driver
+        // reclaimed this request while we were inside a stage. Stop driving:
+        // everything we write from here competes with whoever holds it now.
+        const stillOurs = await q.heartbeatPipelineLock(requestId, lockOwner).catch(() => true);
+        if (!stillOurs) {
+          superseded = true;
+          clearInterval(heartbeat);
+        }
         return;
       }
 
@@ -1803,7 +1952,11 @@ export async function drivePipeline(requestId: string, actor: string): Promise<D
       // before starting its stage has none. That is exactly the shape of the
       // stall this exists for.
       if (await q.hasRunningStage(requestId).catch(() => true)) {
-        await q.heartbeatPipelineLock(requestId).catch(() => {});
+        const stillOurs = await q.heartbeatPipelineLock(requestId, lockOwner).catch(() => true);
+        if (!stillOurs) {
+          superseded = true;
+          clearInterval(heartbeat);
+        }
         return;
       }
 
@@ -1832,12 +1985,25 @@ export async function drivePipeline(requestId: string, actor: string): Promise<D
           },
         })
         .catch(() => {});
-      await q.releasePipelineLock(requestId).catch(() => {});
+      // Ours only — the watchdog is the one place most likely to be running
+      // inside a driver that has already been superseded, which is exactly
+      // where releasing somebody else's lock does the most damage.
+      await q.releasePipelineLock(requestId, lockOwner).catch(() => {});
+      superseded = true;
     })();
   }, HEARTBEAT_MS);
 
   try {
     for (let i = 0; i < MAX_STAGES_PER_RUN; i++) {
+      if (superseded) {
+        return {
+          stagesRun,
+          finalStatus,
+          stoppedBecause: 'lock_lost',
+          message: 'Another driver took this request on; this one stood down.',
+        };
+      }
+
       const request = await q.getRequest(requestId);
       if (!request) {
         return {
@@ -1960,10 +2126,14 @@ export async function drivePipeline(requestId: string, actor: string): Promise<D
         };
       }
 
-      // Tell the lock we are still alive between stages — a single stage can
-      // legitimately run for minutes, and without this a slow-but-healthy run
-      // would look abandoned and be reclaimed underneath itself.
-      await q.heartbeatPipelineLock(requestId);
+      // Tell the lock we are still alive between stages — and check it is
+      // still ours. A stage can run for minutes, and the request can have been
+      // reclaimed in that time; carrying on would mean two drivers writing the
+      // same request, which is how a late arrival came to fail a run that four
+      // stages of healthy work had gone into.
+      if (!(await q.heartbeatPipelineLock(requestId, lockOwner).catch(() => true))) {
+        superseded = true;
+      }
     }
 
     return {
@@ -1977,6 +2147,24 @@ export async function drivePipeline(requestId: string, actor: string): Promise<D
     // something outside them broke. Record it rather than letting a
     // fire-and-forget run die silently with no trace.
     const message = err instanceof Error ? err.message : String(err);
+
+    // Every stage sets its own status BEFORE its try block, so a superseded
+    // driver's ConflictError escapes the stage entirely and lands here. That
+    // is not this run failing — it is this run discovering it is no longer
+    // the one in charge.
+    if (err instanceof q.ConflictError) {
+      await q
+        .logEvent({
+          requestId,
+          actor,
+          step: 'drive_superseded',
+          ok: true,
+          detail: { note: 'another driver moved this request on', conflict: message },
+        })
+        .catch(() => {});
+      return { stagesRun, finalStatus, stoppedBecause: 'lock_lost', message };
+    }
+
     await q
       .logEvent({
         requestId,
@@ -1991,7 +2179,9 @@ export async function drivePipeline(requestId: string, actor: string): Promise<D
     // Always — a lock that outlives its driver blocks the request for twenty
     // minutes for no reason.
     clearInterval(heartbeat);
-    await q.releasePipelineLock(requestId).catch(() => {});
+    // Ours only. Releasing a lock we no longer hold is not cleanup, it is
+    // taking it away from the driver that is using it.
+    await q.releasePipelineLock(requestId, lockOwner).catch(() => {});
   }
 }
 

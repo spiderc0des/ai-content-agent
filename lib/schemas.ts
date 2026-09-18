@@ -104,7 +104,23 @@ export type Intake = z.infer<typeof IntakeSchema>;
  * quick" is noise at best — it is an instruction to this system, not context
  * about the article.
  */
-const NOT_FOR_THE_MODEL = new Set(['research_depth']);
+const NOT_FOR_THE_MODEL = new Set([
+  // How hard research works. An instruction to this system, not context
+  // about the article.
+  'research_depth',
+
+  // How many articles the PIPELINE will produce, by making this many separate
+  // calls. A single writer is producing one article and has no use for it —
+  // and telling it otherwise produced exactly the failure you would expect:
+  // an article containing a section headed "Editor's Note: Why This Is One
+  // Article, Not Three Options", addressed to whoever commissioned the work
+  // rather than to the reader.
+  //
+  // The planner still gets the count, because planning N distinct angles is
+  // genuinely its job — but it receives it as an explicit argument to
+  // planPrompt(), not smuggled in through the intake text every call shares.
+  'option_count',
+]);
 
 export function intakeAsText(intake: Partial<Intake>): string {
   return Object.entries(intake)

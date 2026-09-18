@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { depthProfile, RESEARCH_DEPTHS, relativeCost } from '../lib/research-depth';
 
 /**
@@ -129,5 +131,43 @@ describe('research depth profiles', () => {
     expect(relativeCost('standard')).toBe('the default');
     expect(relativeCost('quick')).toMatch(/%/);
     expect(relativeCost('deep')).toMatch(/%/);
+  });
+});
+
+/**
+ * A top-up round is a whole extra research call, and the sum was unbounded.
+ *
+ * Measured: one real run spent 793 seconds across two rounds — roughly 400s
+ * each — against a platform that kills a function at 300. The per-call
+ * deadline cannot catch that, because each call is individually reasonable.
+ * What is unreasonable is starting a second one when there is no time left to
+ * use the answer.
+ */
+describe('research stops going back for more once time is spent', () => {
+  const PIPELINE = readFileSync(join(process.cwd(), 'lib', 'pipeline.ts'), 'utf8');
+
+  it('bounds the stage by elapsed time, not only by round count', () => {
+    const m = /const RESEARCH_ROUND_BUDGET_MS = ([\d_]+);/.exec(PIPELINE);
+    expect(m, 'research must bound its total time').not.toBeNull();
+    const ms = Number(m![1].replace(/_/g, ''));
+    // Room for one round inside a 300s function, and not room for two.
+    expect(ms).toBeLessThan(300_000);
+    expect(ms).toBeGreaterThan(120_000);
+  });
+
+  it('checks the budget before starting a round, not after', () => {
+    const at = PIPELINE.indexOf('for (let round = 1; round <= depth.maxRounds');
+    expect(at).toBeGreaterThan(-1);
+    const body = PIPELINE.slice(at, at + 1600);
+    expect(body).toContain('RESEARCH_ROUND_BUDGET_MS');
+    // The round already running finishes — abandoning a call that is about to
+    // answer throws away everything it fetched.
+    expect(body).toMatch(/round > 1/);
+  });
+
+  it('never lets rounds multiply past what one function can hold', () => {
+    for (const d of RESEARCH_DEPTHS) {
+      expect(depthProfile(d).maxRounds, d).toBeLessThanOrEqual(2);
+    }
   });
 });

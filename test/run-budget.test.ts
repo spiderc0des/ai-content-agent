@@ -166,7 +166,7 @@ describe('the heartbeat stops claiming a stuck drive is alive', () => {
     // drive that never reaches the code that would clear it.
     const at = PIPELINE.indexOf('const heartbeat = setInterval');
     expect(at).toBeGreaterThan(-1);
-    const body = PIPELINE.slice(at, at + 2600);
+    const body = PIPELINE.slice(at, at + 3400);
     expect(body).toContain('MAX_DRIVE_MS');
     expect(body).toContain('clearInterval(heartbeat)');
     // A wedged drive must let go of the lock, not merely go quiet — otherwise
