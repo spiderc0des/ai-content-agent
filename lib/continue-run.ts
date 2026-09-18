@@ -29,12 +29,27 @@ import { logEvent } from './queries';
 /**
  * How many times one run may hand off to itself.
  *
- * At roughly four minutes a slice this is about forty minutes of pipeline —
- * comfortably past the thirteen a full run takes, and short enough that a
- * genuine loop stops rather than billing all night. The stage cap and the
- * repeat guard inside drivePipeline are the first defences; this is the last.
+ * THREE, because the platform — not this code — is what limits it.
+ *
+ * Vercel refuses a deployment that invokes itself too deeply, and answers the
+ * call with a plain `508 Loop Detected` from its proxy before any of our code
+ * runs. That is not a hypothesis: hops 1 to 4 came back 202 from this app and
+ * hop 5 came back a non-JSON 508, on a request whose every stage had
+ * succeeded. The old value of 10 was never reachable, so the chain did not end
+ * when it was told to — it ended when the platform cut it off, which looks
+ * identical to a bug.
+ *
+ * Three keeps a comfortable margin under that ceiling. A chain that runs out
+ * of hops stops cleanly and leaves the request unlocked in a machine status,
+ * which is exactly the shape /api/cron/resume looks for — so the external
+ * worker carries it on, and each of those ticks starts a fresh chain from
+ * outside, at depth zero, with three more hops of its own.
+ *
+ * Self-continuation is therefore the fast path, not the only path. It was
+ * always meant to be the thing that stops a request waiting on a scheduler;
+ * it cannot also be the thing that runs an unbounded pipeline unaided.
  */
-const MAX_HOPS = 10;
+const MAX_HOPS = 3;
 
 /** Set by the continue endpoint so each slice knows how far along the chain it is. */
 export const HOP_HEADER = 'x-koya-hop';
@@ -202,6 +217,20 @@ export function interpretContinueResponse(
   // something that is not this application, which is what a stale APP_URL
   // produces.
   if (body === null) {
+    // 508 is the one worth naming. It is the hosting platform refusing to let
+    // a deployment invoke itself any deeper, returned by its proxy before this
+    // application is reached — so it says nothing about the request and
+    // everything about the chain. The run is fine; it just has to be carried
+    // on from outside.
+    if (status === 508) {
+      return {
+        outcome: 'refused',
+        status,
+        reason:
+          'the platform refused the hand-off (508 loop detected) — the chain is too deep, ' +
+          'so the scheduled resume worker takes it from here',
+      };
+    }
     return { outcome: 'refused', status, reason: `non-JSON response (${status})` };
   }
   if (!ok) {

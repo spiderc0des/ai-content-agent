@@ -19,6 +19,7 @@ import {
   getReviews,
   getStageRuns,
   lockIsLive,
+  findAppUser,
 } from '@/lib/queries';
 import { nextStage, progressOf } from '@/lib/pipeline';
 import NotAuthorized from '../../NotAuthorized';
@@ -41,6 +42,10 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
 
   const request = await getRequest(id);
   if (!request) notFound();
+  // Who asked for this. Shown at the top because on a shared queue the first
+  // question about any request is whose it is — and a name answers it where a
+  // uuid does not.
+  const author = request.author_id ? await findAppUser(request.author_id) : null;
   if (!canViewRequest(user, request)) {
     return <NotAuthorized message="This request belongs to someone else." />;
   }
@@ -298,7 +303,7 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
           </Link>
         </div>
         <p className="text-sm" style={{ color: 'var(--ink-soft)' }}>
-          For {request.target_audience}
+          {authorName(author)} · For {request.target_audience}
           {request.primary_keyword && ` · keyword “${request.primary_keyword}”`}
         </p>
       </div>
@@ -306,4 +311,17 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
       <Workspace data={data} />
     </div>
   );
+}
+
+/**
+ * What to call the person who made the request.
+ *
+ * The profile's name first. Falling back to the email rather than to any
+ * hard-coded name: a placeholder that happens to be right for one account is
+ * wrong for the next person who signs up, and a wrong name is worse than no
+ * name on a page whose whole job is saying who is accountable for what.
+ */
+function authorName(author: { full_name: string; email: string } | null): string {
+  if (!author) return 'Unknown creator';
+  return author.full_name.trim() || author.email;
 }

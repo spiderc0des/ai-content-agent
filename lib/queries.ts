@@ -76,6 +76,20 @@ export async function findAppUser(id: string) {
   return rows.length ? AppUserRow.parse(rows[0]) : null;
 }
 
+/**
+ * Everyone who can actually act on a review.
+ *
+ * Active reviewers only. An admin is not included unless they are also a
+ * reviewer: the notification exists to reach the people who can approve the
+ * thing, and mailing everyone with a login teaches them to ignore it.
+ */
+export async function listReviewerEmails(): Promise<string[]> {
+  const rows = await sql`
+    select email from app_users
+    where active and is_reviewer and email <> '' order by email`;
+  return rows.map((r) => String(r.email));
+}
+
 export async function findAppUserByEmail(email: string) {
   const rows = await sql`select * from app_users where email = ${email.toLowerCase()}`;
   return rows.length ? AppUserRow.parse(rows[0]) : null;
