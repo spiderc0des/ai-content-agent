@@ -83,6 +83,31 @@ export async function findAppUser(id: string) {
  * reviewer: the notification exists to reach the people who can approve the
  * thing, and mailing everyone with a login teaches them to ignore it.
  */
+/**
+ * The best evaluation score at the latest revision, and at the one before it.
+ *
+ * Grouped by the version's revision number rather than by time, because
+ * options are evaluated in parallel and their rows interleave — ordering by
+ * id would compare an option against a sibling rather than against its own
+ * previous draft.
+ */
+export async function bestScoreByRound(
+  requestId: string,
+): Promise<{ current: number | null; previous: number | null }> {
+  const rows = await sql`
+    select av.revision_no, max(e.overall_score)::float as best
+    from evaluations e
+    join article_versions av on av.id = e.version_id
+    where e.request_id = ${requestId}
+    group by av.revision_no
+    order by av.revision_no desc
+    limit 2`;
+  return {
+    current: rows[0] ? Number(rows[0].best) : null,
+    previous: rows[1] ? Number(rows[1].best) : null,
+  };
+}
+
 export async function listReviewerEmails(): Promise<string[]> {
   const rows = await sql`
     select email from app_users

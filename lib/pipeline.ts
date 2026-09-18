@@ -917,8 +917,13 @@ export async function runEvaluation(request: ContentRequestRow): Promise<StageRe
     // a person, and only a person can decide to reject.
     const anyPass = statuses.includes('pass');
     const budgetLeft = request.revision_round < request.max_revision_rounds;
+    // Scores this round against the round before, so a revision that changed
+    // nothing ends the loop instead of buying another one.
+    const scored = await q.bestScoreByRound(request.id);
     const next = nextAfterEvaluation({
       anyPassed: anyPass,
+      bestScore: scored.current,
+      previousBestScore: scored.previous,
       revisionRound: request.revision_round,
       maxRevisionRounds: request.max_revision_rounds,
     });

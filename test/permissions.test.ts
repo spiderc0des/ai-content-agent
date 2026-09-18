@@ -298,3 +298,63 @@ describe('the driver progress guard', () => {
     expect(moved.repeats).toBe(0);
   });
 });
+
+/**
+ * The revision loop is the most expensive thing in the pipeline: measured
+ * across every completed run, evaluation and revision together were 52% of
+ * all busy time, while research — the stage everyone assumes is the problem —
+ * was 16%.
+ *
+ * It was also spending that time for very little. 53 of 55 evaluations came
+ * back `revise`, so the loop ran to exhaustion on every single request and
+ * the draft went to a human regardless. The rounds were never deciding the
+ * destination, only how polished the draft was when it got there:
+ *
+ *   revision 1:  +0.40 average score, improved 19 of 19
+ *   revision 2:  +0.13 average score, improved 10 of 16
+ */
+describe('nextAfterEvaluation — when to stop revising', () => {
+  const base = { anyPassed: false, revisionRound: 1, maxRevisionRounds: 2 };
+
+  it('always allows the first revision, with nothing to compare against yet', () => {
+    expect(
+      nextAfterEvaluation({ ...base, revisionRound: 0, bestScore: 3.4, previousBestScore: null }),
+    ).toBe('revising');
+  });
+
+  it('keeps revising while the score is still climbing', () => {
+    expect(nextAfterEvaluation({ ...base, bestScore: 3.8, previousBestScore: 3.4 })).toBe('revising');
+  });
+
+  it('stops when a revision produced no improvement', () => {
+    // Another round costs a revision call and a re-evaluation to arrive at the
+    // same place — a human reading it — with a draft that is no better.
+    expect(nextAfterEvaluation({ ...base, bestScore: 3.6, previousBestScore: 3.6 })).toBe(
+      'awaiting_review',
+    );
+  });
+
+  it('stops when a revision made the draft worse', () => {
+    expect(nextAfterEvaluation({ ...base, bestScore: 3.4, previousBestScore: 3.8 })).toBe(
+      'awaiting_review',
+    );
+  });
+
+  it('still goes straight to review the moment something passes', () => {
+    expect(
+      nextAfterEvaluation({ ...base, anyPassed: true, bestScore: 3.0, previousBestScore: 4.5 }),
+    ).toBe('awaiting_review');
+  });
+
+  it('still honours a spent budget regardless of score movement', () => {
+    expect(
+      nextAfterEvaluation({
+        ...base,
+        revisionRound: 2,
+        maxRevisionRounds: 2,
+        bestScore: 4.9,
+        previousBestScore: 3.0,
+      }),
+    ).toBe('awaiting_review');
+  });
+});

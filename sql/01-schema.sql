@@ -124,7 +124,12 @@ create table if not exists content_requests (
   failed_stage        pipeline_stage,
   failed_reason       text,
   revision_round      int not null default 0,
-  max_revision_rounds int not null default 2,
+  -- One, not two. Measured over real runs: the FIRST revision raised the
+  -- evaluation score every single time (19/19, +0.40 average). The second
+  -- raised it by +0.13 and failed to improve 6 times in 16 — while costing a
+  -- revision call and a re-evaluation, about four minutes of the run, on every
+  -- request. Raise it per request when the topic is worth the wait.
+  max_revision_rounds int not null default 1,
 
   -- the human gate's outputs
   selected_article_id   uuid,      -- FK added after articles exists (circular)
