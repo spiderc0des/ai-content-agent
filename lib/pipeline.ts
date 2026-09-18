@@ -1496,6 +1496,15 @@ const MAX_STAGES_PER_RUN = 24;
 export const RUN_BUDGET_MS = Number(process.env.PIPELINE_RUN_BUDGET_MS ?? 240_000);
 
 /**
+ * How often a running driver says it is still alive.
+ *
+ * Comfortably more often than the lock's staleness window, so a healthy run
+ * is never mistaken for an abandoned one, and comfortably rarely enough that
+ * it is one small UPDATE a minute rather than a load.
+ */
+const HEARTBEAT_MS = 20_000;
+
+/**
  * How long each stage usually takes, in milliseconds.
  *
  * Measured from this system's own `stage_runs` — averages over real runs,
@@ -1577,6 +1586,21 @@ export async function drivePipeline(requestId: string, actor: string): Promise<D
       })
       .catch(() => {});
   }
+
+  // Keep the lock alive DURING a stage, not only between stages.
+  //
+  // This is what lets a dead driver be spotted quickly. Heartbeating only
+  // between stages meant a healthy run looked identical to an abandoned one
+  // for as long as its slowest stage — so the reclaim window had to be twenty
+  // minutes, and a request whose driver really had died sat unresumable for
+  // all of it. A dev server recompiling mid-run does exactly that, and so
+  // does a deploy.
+  //
+  // Ticking while the work is in flight makes a quiet heartbeat mean what it
+  // says: nobody is driving this.
+  const heartbeat = setInterval(() => {
+    void q.heartbeatPipelineLock(requestId).catch(() => {});
+  }, HEARTBEAT_MS);
 
   let stagesRun = 0;
   let finalStatus = 'unknown';
@@ -1730,6 +1754,7 @@ export async function drivePipeline(requestId: string, actor: string): Promise<D
   } finally {
     // Always — a lock that outlives its driver blocks the request for twenty
     // minutes for no reason.
+    clearInterval(heartbeat);
     await q.releasePipelineLock(requestId).catch(() => {});
   }
 }

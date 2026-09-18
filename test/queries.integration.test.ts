@@ -281,16 +281,24 @@ describe.skipIf(!hasRealDatabase)('the pipeline lock', () => {
 
     await claimPipelineLock(request.id, 'driver-that-will-die');
 
-    // A heartbeat from five minutes ago: slow, not dead. A stage can
-    // legitimately run this long, so taking it would restart live work.
+    // Forty seconds: two missed beats. Slow, not dead — taking it here would
+    // restart live work, which is the whole thing this lock prevents.
+    //
+    // These numbers changed when the driver started heartbeating every twenty
+    // seconds DURING a stage rather than only between stages. The old test
+    // asserted five minutes was "slow but alive", and it had to: with no beat
+    // during a stage, an honest five-minute research run was indistinguishable
+    // from a dead process. Now a quiet minute means nobody is driving.
     await sql`
-      update content_requests set pipeline_heartbeat_at = now() - interval '5 minutes'
+      update content_requests set pipeline_heartbeat_at = now() - interval '40 seconds'
       where id = ${request.id}`;
     expect(await claimPipelineLock(request.id, 'impatient')).toBeNull();
 
-    // Half an hour: the driver is gone. This is what the resume cron relies on.
+    // Five minutes: fifteen missed beats. The driver is gone — killed by a
+    // deploy, or a dev server recompiling mid-run. This is what the resume
+    // worker relies on, and it no longer has to wait twenty minutes for it.
     await sql`
-      update content_requests set pipeline_heartbeat_at = now() - interval '30 minutes'
+      update content_requests set pipeline_heartbeat_at = now() - interval '5 minutes'
       where id = ${request.id}`;
     const reclaimed = await claimPipelineLock(request.id, 'cron:resume');
     expect(reclaimed).not.toBeNull();

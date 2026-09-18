@@ -531,13 +531,22 @@ export async function startAutoRevision(id: string): Promise<ContentRequestRow> 
 
 /**
  * How long a lock may go without a heartbeat before another driver may take
- * it. Generous on purpose: a single stage legitimately runs for minutes
- * (research does real web searches; generation writes N articles), and the
- * driver heartbeats between stages, not during them. Reclaiming a lock that
- * is merely slow would restart work that is still running — the exact
- * duplicate-spend problem the lock exists to prevent.
+ * it.
+ *
+ * Three minutes, because the driver now heartbeats every twenty seconds
+ * WHILE a stage runs, not only between stages. That is nine missed beats
+ * before anyone touches the lock, so a slow-but-healthy run is never
+ * reclaimed underneath itself — the duplicate-spend problem this lock exists
+ * to prevent.
+ *
+ * It used to be twenty minutes, and it had to be: with no heartbeat during a
+ * stage, a run doing five minutes of honest web research looked exactly like
+ * a run whose process had died. The cost was paid by the dead ones — a driver
+ * killed by a deploy, or by a dev server recompiling mid-run, left its
+ * request locked and unresumable for the full twenty minutes with nothing
+ * wrong with it.
  */
-const LOCK_STALE_AFTER = '20 minutes';
+const LOCK_STALE_AFTER = '3 minutes';
 
 /**
  * Take ownership of a request's pipeline, or return null if someone already
