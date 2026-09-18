@@ -58,7 +58,9 @@ export default function RequestForm() {
       desired_tone: sample.desired_tone ?? '',
       word_count_target: '',
       option_count: String(sample.option_count),
-      research_depth: 'standard',
+      // The sample's own depth, not the form default — it is most of what
+      // makes one sample quicker to run than another.
+      research_depth: sample.research_depth,
       deadline_at: '',
     });
     setChannels([...sample.channels_wanted]);
