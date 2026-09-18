@@ -1541,9 +1541,13 @@ export const STAGE_RESERVE_MS: Record<string, number> = {
   retrieval: 90_000,
   selection: 90_000,
   planning: 70_000,
-  generation: 130_000,
-  evaluation: 140_000,
-  revision: 170_000,
+  generation: 120_000,
+  // Recent single-option runs: 49s, 55s, 55s, 65s. The p75 of 195s that this
+  // was set from came from older multi-option runs where the per-option calls
+  // still ran one after another; they are issued together now, so the wall
+  // clock is roughly one option's worth however many there are.
+  evaluation: 100_000,
+  revision: 150_000,
   packaging: 60_000,
 };
 

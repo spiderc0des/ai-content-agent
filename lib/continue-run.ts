@@ -39,17 +39,29 @@ import { logEvent } from './queries';
  * when it was told to — it ended when the platform cut it off, which looks
  * identical to a bug.
  *
- * Three keeps a comfortable margin under that ceiling. A chain that runs out
- * of hops stops cleanly and leaves the request unlocked in a machine status,
- * which is exactly the shape /api/cron/resume looks for — so the external
- * worker carries it on, and each of those ticks starts a fresh chain from
- * outside, at depth zero, with three more hops of its own.
+ * FOUR, from the record rather than from caution. Across every hand-off this
+ * system has made:
+ *
+ *   hop 1  202 ×10      hop 3  202 ×10
+ *   hop 2  202 ×10      hop 4  202 ×2
+ *   hop 5  202 ×1, 508 ×1   ← the ceiling is here, and it is intermittent
+ *
+ * Hops one to four have a clean record over thirty-two calls. Hop five worked
+ * once and was refused once, which says the limit is not a hard depth count so
+ * much as something that starts failing around there — so four is the last
+ * depth worth relying on. Three was one too few: a full run needs about five
+ * slices, and stopping at four left the last stage stranded.
+ *
+ * A chain that runs out of hops stops cleanly and leaves the request unlocked
+ * in a machine status, which is exactly the shape /api/cron/resume looks for —
+ * so the external worker carries it on, and each of those ticks starts a fresh
+ * chain from outside, at depth zero, with four more hops of its own.
  *
  * Self-continuation is therefore the fast path, not the only path. It was
  * always meant to be the thing that stops a request waiting on a scheduler;
  * it cannot also be the thing that runs an unbounded pipeline unaided.
  */
-const MAX_HOPS = 3;
+const MAX_HOPS = 4;
 
 /** Set by the continue endpoint so each slice knows how far along the chain it is. */
 export const HOP_HEADER = 'x-koya-hop';
@@ -87,13 +99,21 @@ export async function driveAndContinue(
     // Not silent. A run that hits this has been going for forty minutes and
     // someone needs to look at it, so it says so where the request's own log
     // will show it.
+    // Not a failure, and it should not be coloured like one. The run is
+    // intact, unlocked, and in a machine status — the scheduled worker sweeps
+    // every five minutes and carries it on from exactly here. Logging this red
+    // taught the reader to distrust a working mechanism.
     await logEvent({
       requestId,
       actor,
       stage: null,
       step: 'pipeline_handoff_limit',
-      ok: false,
-      detail: { hops: hop, status: result.finalStatus },
+      ok: true,
+      detail: {
+        hops: hop,
+        status: result.finalStatus,
+        note: 'chain depth reached; the scheduled worker resumes this within five minutes',
+      },
     }).catch(() => {});
     return result;
   }
