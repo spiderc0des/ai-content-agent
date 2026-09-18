@@ -113,7 +113,10 @@ export function findingsOf(res: Anthropic.Beta.BetaMessage): ResearchFinding[] {
  *     applying it in arrival order would throw away the exact sources the
  *     extra round was run to find.
  */
-export function mergeFindings(rounds: ResearchFinding[][]): ResearchFinding[] {
+export function mergeFindings(
+  rounds: ResearchFinding[][],
+  cap = MAX_SOURCES,
+): ResearchFinding[] {
   const byUrl = new Map<string, ResearchFinding>();
   for (const round of rounds) {
     for (const f of round) {
@@ -124,7 +127,7 @@ export function mergeFindings(rounds: ResearchFinding[][]): ResearchFinding[] {
   const all = [...byUrl.values()];
   const readable = all.filter((f) => f.text);
   const rest = all.filter((f) => !f.text);
-  return [...readable, ...rest.slice(0, Math.max(0, MAX_SOURCES - readable.length))];
+  return [...readable, ...rest.slice(0, Math.max(0, cap - readable.length))];
 }
 
 /** How many of these can actually ground a claim. */

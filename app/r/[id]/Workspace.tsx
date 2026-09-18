@@ -47,6 +47,7 @@ export interface WorkspaceData {
     desiredTone: string;
     wordCountTarget: number | null;
     optionCount: number;
+    researchDepth: string;
     deadlineAt: string | null;
     createdAt: string;
     readiness: string | null;
@@ -759,6 +760,7 @@ export default function Workspace({ data }: { data: WorkspaceData }) {
             value={request.wordCountTarget ? String(request.wordCountTarget) : ''}
           />
           <Field label="Options asked for" value={String(request.optionCount)} />
+          <Field label="Research depth" value={request.researchDepth} />
           <Field
             label="Channels"
             value={request.channelsWanted.map((c) => CHANNEL_LABEL[c] ?? c).join(', ')}

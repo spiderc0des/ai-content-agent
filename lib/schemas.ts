@@ -86,6 +86,9 @@ export const IntakeSchema = z.object({
     .min(1, 'Ask for at least one option.')
     .max(5, 'Five options is the most this will write in one run.')
     .default(3),
+  // How hard research works. The most expensive dial in the pipeline — see
+  // lib/research-depth.ts for what each setting actually changes.
+  research_depth: z.enum(['quick', 'standard', 'deep']).default('standard'),
   // A deadline that has already passed cannot be met, and nothing downstream
   // would ever flag it — the review queue just sorts it to the top forever.
   deadline_at: optionalFutureDate('The deadline'),

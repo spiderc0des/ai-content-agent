@@ -4,6 +4,7 @@ import * as q from './queries';
 import { checkSeo, slugify, wordCount } from './seo';
 import { excerptsFrom, applyKeepFloor } from './excerpts';
 import { mergeFindings, readableCount } from './research-results';
+import { depthProfile } from './research-depth';
 import { groundClaims } from './grounding';
 import { assessSource } from './source-quality';
 import { nextAfterEvaluation, shouldStopRepeating } from './permissions';
@@ -216,7 +217,7 @@ export async function runAudit(request: ContentRequestRow): Promise<StageResult>
  * while looking well-sourced in the UI. So the bar is the readable count, and
  * research tops up until it clears it.
  */
-const MIN_READABLE_SOURCES = 7;
+const MIN_READABLE_SOURCES = 7; // the Standard profile's value, kept for messages
 
 /**
  * At most three research calls — the first plus two top-ups. Research is the
@@ -247,6 +248,10 @@ interface ToppedUpResearch extends claude.ResearchResult {
 async function researchWithTopUp(
   request: ContentRequestRow,
 ): Promise<claude.ClaudeOutcome<ToppedUpResearch>> {
+  // How hard to work, from the request itself — research is the most
+  // expensive stage, and a topic needing three good pages should not pay for
+  // the sweep a broad one needs. See lib/research-depth.ts.
+  const depth = depthProfile(request.research_depth);
   const roundFindings: claude.ResearchFinding[][] = [];
   const briefs: string[] = [];
   const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
@@ -256,14 +261,14 @@ async function researchWithTopUp(
   let durationMs = 0;
   let rounds = 0;
 
-  const merged = () => mergeFindings(roundFindings);
+  const merged = () => mergeFindings(roundFindings, depth.maxSources);
 
-  for (let round = 1; round <= MAX_RESEARCH_ROUNDS; round++) {
+  for (let round = 1; round <= depth.maxRounds; round++) {
     const before = readableCount(merged());
     const outcome = await claude.researchTopic(
       intakeOf(request),
-      8,
-      16,
+      depth.maxSearches,
+      depth.maxFetches,
       round === 1 ? [] : roundFindings.flat().map((f) => f.url),
     );
 
@@ -287,7 +292,7 @@ async function researchWithTopUp(
     briefs.push(outcome.data.brief_md);
     roundFindings.push(outcome.data.findings);
 
-    if (readableCount(merged()) >= MIN_READABLE_SOURCES) break;
+    if (readableCount(merged()) >= depth.minReadable) break;
     // A round that turned up nothing new to read means the next one would
     // come back the same way. Stop rather than pay for the same answer twice.
     if (round > 1 && readableCount(merged()) === before) break;

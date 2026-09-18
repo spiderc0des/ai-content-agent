@@ -94,6 +94,7 @@ export const ContentRequestRow = z.object({
   word_count_target: z.number().int().nullable(),
   channels_wanted: z.array(z.enum(CHANNELS)),
   option_count: z.number().int(),
+  research_depth: z.enum(['quick', 'standard', 'deep']),
   deadline_at: nullableDate,
 
   intake_hash: z.string(),

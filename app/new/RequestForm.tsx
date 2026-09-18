@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { CHANNELS, type Channel } from '@/lib/schemas';
 import { SAMPLES, type Sample } from '@/lib/samples';
 import { dateTimeLocalBounds } from '@/lib/validation';
+import { RESEARCH_DEPTHS, depthProfile } from '@/lib/research-depth';
 
 /**
  * The three fields the brief requires are marked required; the rest are ours.
@@ -38,6 +39,7 @@ export default function RequestForm() {
     desired_tone: '',
     word_count_target: '',
     option_count: '3',
+    research_depth: 'standard',
     deadline_at: '',
   });
   const [channels, setChannels] = useState<Channel[]>([...CHANNELS]);
@@ -56,6 +58,7 @@ export default function RequestForm() {
       desired_tone: sample.desired_tone ?? '',
       word_count_target: '',
       option_count: String(sample.option_count),
+      research_depth: 'standard',
       deadline_at: '',
     });
     setChannels([...sample.channels_wanted]);
@@ -250,6 +253,26 @@ export default function RequestForm() {
               </select>
               <p className="hint">Distinct angles to choose between.</p>
             </div>
+          </div>
+
+          {/* Research is the most expensive stage by a wide margin, and it is
+              the one the person submitting knows something about: whether the
+              topic needs a sweep or three good pages. */}
+          <div>
+            <label className="label" htmlFor="research_depth">Research depth</label>
+            <select
+              id="research_depth"
+              className="field"
+              value={values.research_depth}
+              onChange={set('research_depth')}
+            >
+              {RESEARCH_DEPTHS.map((d) => (
+                <option key={d} value={d}>
+                  {depthProfile(d).label}
+                </option>
+              ))}
+            </select>
+            <p className="hint">{depthProfile(values.research_depth).hint}</p>
           </div>
 
           <div>

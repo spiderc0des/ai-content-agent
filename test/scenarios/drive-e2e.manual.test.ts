@@ -56,6 +56,7 @@ describe.skipIf(!RUN_LIVE)('drivePipeline end to end', () => {
           word_count_target: null,
           channels_wanted: ['linkedin', 'x', 'newsletter'],
           option_count: 2,
+          research_depth: 'standard' as const,
           deadline_at: null,
           intake_hash: `drive-e2e-${Date.now()}`,
           author_id: author.id,
