@@ -19,6 +19,7 @@ import {
   type Intake,
 } from './schemas';
 import { SYSTEM_PROMPT } from './prompts/system';
+import { depthProfile } from './research-depth';
 import {
   AUDIT_PROMPT,
   SELECTION_PROMPT,
@@ -60,8 +61,34 @@ import * as mock from '../test/mock-anthropic';
  *   low     — mechanical or network-bound (audit, digest, research)
  *   medium  — ranking and reformatting against fixed rules
  *   high    — the writing itself, and the evaluation that gates it
+ *
+ * Those are what each call ASKS for. What it gets is capped by the request's
+ * research depth — see effortFor below.
  */
 const MODEL = 'claude-sonnet-5';
+
+type Effort = 'low' | 'medium' | 'high';
+
+/** Cheapest first, so a cap is a comparison rather than a lookup table. */
+const EFFORT_ORDER: Effort[] = ['low', 'medium', 'high'];
+
+/**
+ * The effort a call actually gets: what it asked for, or the depth's ceiling.
+ *
+ * Depth is a whole-pipeline dial, not a research setting. On `quick` the
+ * ceiling is medium, so planning, generation, evaluation and revision — the
+ * four calls that ask for high — come down with it. Those four are the
+ * longest stages in the pipeline and the largest output lines in the bill, so
+ * capping them is most of what makes a quick run quick.
+ *
+ * It only ever lowers. A call asking for low still gets low at every depth:
+ * research is bound by web round trips and the digest by extraction, and
+ * paying for deliberation on either buys nothing at any setting.
+ */
+function effortFor(intake: Partial<Intake>, asked: Effort): Effort {
+  const cap = depthProfile(intake.research_depth).maxEffort;
+  return EFFORT_ORDER.indexOf(asked) <= EFFORT_ORDER.indexOf(cap) ? asked : cap;
+}
 
 /**
  * On a policy decline, Anthropic retries the same request on a substitute
@@ -610,14 +637,16 @@ export async function planContent(params: {
 }): Promise<ClaudeOutcome<z.infer<typeof ContentPlanSchema>>> {
   if (mockClaude) return mock.mockPlan(params);
 
-  return withRetry('high', async () => {
+  const effort = effortFor(params.intake, 'high');
+
+  return withRetry(effort, async () => {
     const res = await client.beta.messages.parse({
       model: MODEL,
       max_tokens: 16000,
       betas: [FALLBACK_BETA],
       fallbacks: 'default',
       thinking: { type: 'adaptive' },
-      output_config: { effort: 'high', format: zodOutputFormat(ContentPlanSchema) },
+      output_config: { effort, format: zodOutputFormat(ContentPlanSchema) },
       system: cachedSystem(SYSTEM_PROMPT),
       messages: [
         {
@@ -684,14 +713,16 @@ export async function generateArticle(params: {
 }): Promise<ClaudeOutcome<z.infer<typeof ArticleDraftSchema>>> {
   if (mockClaude) return mock.mockArticle(params);
 
-  return withRetry('high', async () => {
+  const effort = effortFor(params.intake, 'high');
+
+  return withRetry(effort, async () => {
     const stream = client.beta.messages.stream({
       model: MODEL,
       max_tokens: 32000,
       betas: [FALLBACK_BETA],
       fallbacks: 'default',
       thinking: { type: 'adaptive' },
-      output_config: { effort: 'high', format: zodOutputFormat(ArticleDraftSchema) },
+      output_config: { effort, format: zodOutputFormat(ArticleDraftSchema) },
       system: cachedSystem(SYSTEM_PROMPT),
       messages: [
         {
@@ -743,14 +774,16 @@ export async function evaluateArticle(params: {
 }): Promise<ClaudeOutcome<z.infer<typeof EvaluationSchema>>> {
   if (mockClaude) return mock.mockEvaluation(params);
 
-  return withRetry('high', async () => {
+  const effort = effortFor(params.intake, 'high');
+
+  return withRetry(effort, async () => {
     const res = await client.beta.messages.parse({
       model: MODEL,
       max_tokens: 16000,
       betas: [FALLBACK_BETA],
       fallbacks: 'default',
       thinking: { type: 'adaptive' },
-      output_config: { effort: 'high', format: zodOutputFormat(EvaluationSchema) },
+      output_config: { effort, format: zodOutputFormat(EvaluationSchema) },
       system: cachedSystem(EVALUATE_PROMPT),
       messages: [
         {
@@ -803,14 +836,16 @@ export async function reviseArticle(params: {
 }): Promise<ClaudeOutcome<z.infer<typeof ArticleDraftSchema>>> {
   if (mockClaude) return mock.mockRevision(params);
 
-  return withRetry('high', async () => {
+  const effort = effortFor(params.intake, 'high');
+
+  return withRetry(effort, async () => {
     const stream = client.beta.messages.stream({
       model: MODEL,
       max_tokens: 32000,
       betas: [FALLBACK_BETA],
       fallbacks: 'default',
       thinking: { type: 'adaptive' },
-      output_config: { effort: 'high', format: zodOutputFormat(ArticleDraftSchema) },
+      output_config: { effort, format: zodOutputFormat(ArticleDraftSchema) },
       system: cachedSystem(SYSTEM_PROMPT),
       messages: [
         {

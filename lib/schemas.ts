@@ -96,8 +96,19 @@ export const IntakeSchema = z.object({
 export type Intake = z.infer<typeof IntakeSchema>;
 
 /** The intake as flat text, for prompts and for hashing. */
+/**
+ * Operator settings that describe HOW to run, not WHAT to write.
+ *
+ * Kept out of the prompt text. `research_depth` travels on the intake so the
+ * pipeline can size its effort from it, but telling the model "research_depth:
+ * quick" is noise at best — it is an instruction to this system, not context
+ * about the article.
+ */
+const NOT_FOR_THE_MODEL = new Set(['research_depth']);
+
 export function intakeAsText(intake: Partial<Intake>): string {
   return Object.entries(intake)
+    .filter(([k]) => !NOT_FOR_THE_MODEL.has(k))
     .map(([k, v]) => {
       const value = Array.isArray(v) ? v.join(', ') : v;
       return `${k}: ${value === null || value === undefined || value === '' ? '(not given)' : value}`;
