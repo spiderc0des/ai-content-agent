@@ -1498,7 +1498,7 @@ const MAX_STAGES_PER_RUN = 24;
  * check happens BEFORE starting a stage, and the slowest one (research)
  * averages about 220 seconds.
  */
-export const RUN_BUDGET_MS = Number(process.env.PIPELINE_RUN_BUDGET_MS ?? 240_000);
+export const RUN_BUDGET_MS = Number(process.env.PIPELINE_RUN_BUDGET_MS ?? 270_000);
 
 /**
  * How often a running driver says it is still alive.
@@ -1512,36 +1512,58 @@ const HEARTBEAT_MS = 20_000;
 /**
  * How long each stage usually takes, in milliseconds.
  *
- * Measured from this system's own `stage_runs` — averages over real runs,
- * rounded up, because the point of a reserve is to be pessimistic:
+ * These are the 75th percentile of recent successful runs, NOT the maximum.
+ * That choice is the whole design, and the first version got it wrong.
  *
- *   research 244s · revision 165s · generation 99s · selection 92s
- *   evaluation 89s · retrieval 80s · packaging 58s · planning 48s · audit 8s
+ * The reserve exists so the driver never starts a stage it cannot finish
+ * before the platform kills the function. Set it near the worst case and the
+ * arithmetic becomes self-defeating: every stage reserves two to three times
+ * what it actually takes, so almost none of them fit alongside another, and a
+ * run that needs nine stages burns a slice on each. That is exactly what
+ * happened — a run whose stages totalled seven minutes of work exhausted its
+ * whole hand-off budget and then sat waiting for the scheduled worker.
  *
- * These exist because the budget check used to ask the wrong question. It
- * asked "have I run over?" and not "do I have room for what comes next", so a
- * run that had used 236 of its 240 seconds happily started a 92-second stage.
- * The platform killed the function mid-call, which left the stage row saying
- * `running` forever, the lock held, and no hand-off made — the driver never
- * reached the line that hands off, because it was not running any more.
+ * Measured p50 against the old reserve makes the gap plain:
  *
- * Stopping one stage early costs one extra hop. Being killed mid-stage costs
- * the stage's work, the lock, and the chain.
+ *   evaluation  p50  65s → reserved 150s      generation p50  76s → 150s
+ *   revision    p50 118s → reserved 200s      selection  p50  57s → 120s
+ *   research    p50 100s → reserved 300s      retrieval  p50  58s → 120s
+ *
+ * At p75 a stage occasionally overruns and the function is killed mid-work.
+ * That costs one stage's time and money, and is now recovered within minutes
+ * — the driver heartbeats every twenty seconds, a dead lock is reclaimable
+ * after three, and the scheduled worker sweeps every five. Weighed against
+ * burning a hand-off on every single stage, the occasional lost stage is much
+ * the cheaper failure.
  */
 export const STAGE_RESERVE_MS: Record<string, number> = {
-  audit: 30_000,
-  research: 300_000,
-  retrieval: 120_000,
-  selection: 120_000,
-  planning: 90_000,
-  generation: 150_000,
-  evaluation: 150_000,
-  revision: 200_000,
-  packaging: 90_000,
+  audit: 20_000,
+  retrieval: 90_000,
+  selection: 90_000,
+  planning: 70_000,
+  generation: 130_000,
+  evaluation: 140_000,
+  revision: 170_000,
+  packaging: 60_000,
+};
+
+/**
+ * Research is reserved by depth, because depth is what decides its length.
+ *
+ * One number cannot serve all three. Quick research runs in about a minute
+ * and a half; deep can use most of a function on its own. Reserving the deep
+ * figure for a quick run meant research never shared a slice with anything —
+ * not even the six-second audit that always precedes it.
+ */
+export const RESEARCH_RESERVE_MS: Record<string, number> = {
+  quick: 150_000,
+  standard: 280_000,
+  deep: 300_000,
 };
 
 /** The reserve for a stage, defaulting to the slowest, for an unknown one. */
-export function reserveFor(stage: string): number {
+export function reserveFor(stage: string, researchDepth = 'standard'): number {
+  if (stage === 'research') return RESEARCH_RESERVE_MS[researchDepth] ?? RESEARCH_RESERVE_MS.standard;
   return STAGE_RESERVE_MS[stage] ?? 300_000;
 }
 
@@ -1668,7 +1690,7 @@ export async function drivePipeline(requestId: string, actor: string): Promise<D
       // The lock is released in the finally block below, and the caller hands
       // off on 'out_of_time', so the next slice carries on from here.
       const elapsed = Date.now() - startedAt;
-      if (stagesRun > 0 && elapsed + reserveFor(stage) > RUN_BUDGET_MS) {
+      if (stagesRun > 0 && elapsed + reserveFor(stage, request.research_depth) > RUN_BUDGET_MS) {
         return {
           stagesRun,
           finalStatus,
